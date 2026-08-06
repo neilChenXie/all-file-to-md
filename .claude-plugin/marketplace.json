@@ -1,0 +1,19 @@
+{
+  "name": "all-file-to-md-dev",
+  "description": "A collection of tools for software development knowledge, including Software Usage Documentation, API documentation, SDKs, IoT communication protocols, and code examples.",
+  "owner": {
+    "name": "Chen Xie",
+    "email": "chenxie121@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "all-file-to-md",
+      "description": "A collection of skills that transform pdf、docx、pptx files to markdown.",
+      "author": {
+        "name": "Chen Xie",
+        "email": "chenxie121@gmail.com"
+      },
+      "source": "./"
+    }
+  ]
+}

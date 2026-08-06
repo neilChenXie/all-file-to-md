@@ -1,0 +1,8 @@
+{
+  "name": "all-file-to-md",
+  "version": "1.0.0",
+  "description": "A collection of skills that transform pdf、docx、pptx files to markdown.",
+  "type": "module",
+  "main": ".opencode/plugins/plugin.js",
+  "keywords": ["opencode-plugin", "skills"]
+}

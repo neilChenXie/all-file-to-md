@@ -1,0 +1,8 @@
+{
+  "name": "all-file-to-md",
+  "description": "A collection of skills that transform pdf、docx、pptx files to markdown.",
+  "author": {
+    "name": "Chen Xie",
+    "email": "chenxie121@gmail.com"
+  }
+}
