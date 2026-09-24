@@ -5,14 +5,17 @@ description: 当用户需要将doc或docx文件转成md文件时，请严格按�
 
 用户指定的docx文件转化为md文件。
 
-整体链路：**docx → 导出 HTML → 解析为 Markdown → 校验修正 → 正式输出**。其中"docx → HTML"是决定保真度的关键一步，按运行环境分两个方案，产物统一放在 `【输入文件路径】/tmp/【文件名】.html`，后续步骤完全一致：
+方案A / 方案C（HTML 链路）的整体链路：**docx → 导出 HTML → 解析为 Markdown → 校验修正 → 正式输出**。其中"docx → HTML"是决定保真度的关键一步，方案A / 方案C 的产物统一放在 `【输入文件路径】/tmp/【文件名】.html`，后续步骤完全一致：
 
-| 方案 | 脚本 | 原理 | 适用场景 | 保真度 |
+| 方案 | 脚本 / 方式 | 原理 | 适用场景 | 保真度 |
 |------|------|------|----------|--------|
 | A（首选） | `docx_to_html.ps1` | 脚本内先试 WPS COM（`Kwps.Application` 等），不可用时自动回退 Microsoft Word COM（`Word.Application`），打开文档后另存为 HTML | Windows 且已安装 WPS 或 Microsoft Word | 高：合并单元格表格、公式、版式还原最好 |
-| B（回退） | `docx_to_html_pandoc.py` | pandoc 转换（pypandoc-binary 自带 pandoc） | 未安装 WPS 与 Microsoft Word；或 WPS/Word 程序打开着目标文件导致 COM 失败、关闭重试后仍失败 | 中：表格结构保留，版式类信息有损，步骤5 需按专项核查清单修复 |
+| B（回退） | 提醒用户将 docx 转存为 PDF，再调用 `pdf-img-to-md` 技能 | 用户手动导出 PDF 后，由 `pdf-img-to-md` 将 PDF 逐页转 PNG，并用多模态模型识别为 md | 方案A 不可用或失败，且用户可将 docx 手动转存为 PDF（手动另存不受 COM 失败影响） | 高：基于 PDF 原版式逐页识别，图文、公式、表格版式还原好 |
+| C（回退） | `docx_to_html_pandoc.py` | pandoc 转换（pypandoc-binary 自带 pandoc） | 用户无法将 docx 转存为 PDF（如未安装 WPS/Word，或不接受手动操作） | 中：表格结构保留，版式类信息有损，步骤5 需按专项核查清单修复 |
 
-Mac 系统无 COM 自动化，直接使用方案B（pandoc 跨平台），或按方案A 的思路由用户手动用 WPS 将 docx 另存为 html 后放入 tmp 目录。
+Mac 系统无 COM 自动化：优先采用方案B（由用户手动用 WPS / Word 将 docx 导出为 PDF，再交由 `pdf-img-to-md` 技能处理），或按方案A 的思路由用户手动用 WPS 将 docx 另存为 html 后放入 tmp 目录；以上均不可行时再用方案C（pandoc 跨平台）。
+
+方案B（PDF 链路）的流程：**docx →（提醒用户手动转存）PDF → `pdf-img-to-md` 技能识别转换 → 正式输出**。该链路不执行本技能的步骤2~6，完整流程以 `pdf-img-to-md` 技能为准（详见步骤1 的方案B）。
 
 ## 重要提醒！
 
@@ -29,13 +32,20 @@ Mac 系统无 COM 自动化，直接使用方案B（pandoc 跨平台），或按
   - 【输入文件路径】/【文件名】.md
   - 【输入文件路径】/【文件名】.files/【图片名】.png
 
+> 方案B（PDF 链路）的临时/最终文件沿用 `pdf-img-to-md` 技能的约定：临时文件为【输入文件路径】/tmp/ 下逐页导出的 PNG（及子agent 输出的【图片名】.md），最终产物同样是【输入文件路径】/【文件名】.md 及配套 `.files/` 图片目录。
+
 ## Workflow
 
-### 步骤1：将docx文件导出为html文件
+> **链路说明**：方案A / 方案C 走 HTML 链路，依次执行步骤2~6；方案B 走 PDF 链路，由 `pdf-img-to-md` 技能完成全部转换，不执行步骤2~6。步骤1 决定选择哪种方案。
+
+### 步骤1：选择转换方案并导出（HTML / PDF）
 
 开始前先做一个判断：文档是否含图片——直接查 docx zip 包内是否存在 `word/media/` 条目（比转换后再 grep HTML 更可靠）。**无图片时，步骤3、步骤4 可整体跳过。**
 
-然后按环境选择方案：Windows 且已安装 WPS 或 Microsoft Word → 方案A（脚本内部先试 WPS，WPS 不可用时自动回退 Microsoft Word，无需手工选择）；两者都不可用，或方案A 失败 → 方案B。
+然后按顺序选择方案：
+1. Windows 且已安装 WPS 或 Microsoft Word → **方案A**（脚本内部先试 WPS，WPS 不可用时自动回退 Microsoft Word，无需手工选择）；
+2. 方案A 不可用或失败 → **方案B**（提醒用户将 docx 转存为 PDF，再交由 `pdf-img-to-md` 技能处理）；
+3. 用户无法转存 PDF → **方案C**（pandoc 导出）。
 
 #### 方案A（首选）：WPS / Word COM 导出（Windows）
 
@@ -67,10 +77,26 @@ Mac 系统无 COM 自动化，直接使用方案B（pandoc 跨平台），或按
 1. 若日志先出现「[WARN] WPS COM 连接失败」随后显示「[OK] Word conversion successful」→ 属正常回退，无需处理，继续后续步骤。
 2. 若最终报「WPS 与 Microsoft Word 均无法完成导出」，再看脚本给出的诊断：
    - **提示 WPS / Word 程序打开着目标文件** → 这是最常见的失败原因：**WPS / Word 打开着目标 docx 文件时，COM 组件无法激活（`New-Object` 会静默失败）或无法打开该文件**。此时必须**提示用户关闭打开了目标文件的 WPS / Word 窗口（保险起见可关闭所有窗口），然后重试**。不要替用户强杀进程，避免丢失未保存的文档。
-   - 用户关闭后重试仍失败，或提示未检测到 WPS / Word 进程 → 大概率未安装 WPS 与 Microsoft Word，或 COM 注册异常。提示用户安装其一后重试，或直接转方案B。
+   - 用户关闭后重试仍失败，或提示未检测到 WPS / Word 进程 → 大概率未安装 WPS 与 Microsoft Word，或 COM 注册异常。提示用户安装其一后重试；若无法安装，转方案B（提醒用户用其他工具将 docx 转存为 PDF）或方案C（pandoc）。
 3. 注意：部分执行环境（如安全策略）会拦截内联的 `New-Object -ComObject` 调用，此时应通过运行本脚本文件的方式触发 COM，而不是在命令行里内联实例化。
 
-#### 方案B（回退）：pandoc 导出（跨平台）
+#### 方案B（回退）：转存 PDF + `pdf-img-to-md` 技能识别
+
+方案A 不可用或失败时（未安装 WPS / Word、COM 被安全策略拦截、WPS/Word 打开着目标文件且关闭重试后仍失败等）采用本方案：**提醒用户手动将 docx 转存为 PDF，再调用 `pdf-img-to-md` 技能完成识别转换**。用户手动另存不依赖 COM 自动化，且最终 md 基于 PDF 原版式逐页识别，保真度高。
+
+**操作步骤：**
+
+1. **提醒用户转存 PDF**：请用户用 WPS / Word（或其他可用的 docx 转换工具）打开目标 docx 文件，选择"另存为 / 导出为 PDF"，保存到【输入文件路径】目录下，并**保持文件名与 docx 一致**（如 `document.docx` → `document.pdf`）。参考话术：
+   > 本机无法自动完成 docx 转换，请手动协助一步：用 WPS / Word 打开该文件，将其"另存为 / 导出为 PDF"（注意保留原版式），文件名保持不变、保存到 `<【输入文件路径】>`，完成后告诉我。该方式转换的保真度更高。
+2. **等待并核对**：用户确认后，检查 PDF 文件存在、可正常打开、内容完整（若 PDF 保存到了其他目录，则以该 PDF 所在目录作为后续的【输入文件路径】）。
+3. **调用 `pdf-img-to-md` 技能**：以该 PDF 为输入，按 `pdf-img-to-md` 技能的完整流程执行（PDF 逐页导出 PNG → 分批多模态识别 → 合并 → 校验修正 → 按需提取插图），最终生成与 docx 同名的 md 文档及配套图片目录。
+   - 两个技能使用相同的【输入文件路径】约定，PDF 与 docx 同目录即可无缝衔接；
+   - `pdf-img-to-md` 的步骤0 会删除【输入文件路径】/tmp/ 目录，可顺带清理方案A 遗留的临时文件，无需额外处理；
+   - 需当前模型具备图片识别能力（`pdf-img-to-md` 会自行校验）。
+4. **本方案不执行本技能的步骤2~6**，最终产物以 `pdf-img-to-md` 的输出为准。
+5. 若用户无法转存 PDF，转方案C。
+
+#### 方案C（回退）：pandoc 导出（跨平台）
 
 调用 `./scripts/docx_to_html_pandoc.py`，通过 pandoc 完成转换（经 pypandoc-binary 提供可执行文件，无需单独安装 pandoc）。
 
@@ -101,7 +127,7 @@ python ./scripts/docx_to_html_pandoc.py "【输入文件路径】/document.docx"
 > - 隔离环境（推荐）：`python -m venv <env>` 后，Windows 用 `<env>\Scripts\pip.exe install beautifulsoup4 lxml`（注意 Windows venv 的 pip 在 `Scripts\` 而非 `bin\`）；再用 `<env>\Scripts\python.exe` 运行脚本。
 > - 之后所有 `python ./scripts/...py` 调用均改用该 venv 的 python 路径。
 
-通过调用 `./scripts/html_to_markdown.py` python脚本，将导出的html文件转换为md文件。脚本自动探测编码，同时兼容方案A 的 WPS/Word HTML（GB2312/GBK）与方案B 的 pandoc HTML（UTF-8 HTML5）。
+通过调用 `./scripts/html_to_markdown.py` python脚本，将导出的html文件转换为md文件。脚本自动探测编码，同时兼容方案A 的 WPS/Word HTML（GB2312/GBK）与方案C 的 pandoc HTML（UTF-8 HTML5）。
 
 **脚本参数说明：**
 
@@ -126,7 +152,7 @@ python .\scripts\html_to_markdown.py "【输入文件路径】\tmp\document.html
 
 对 `【输入文件路径】/tmp/【文件名】.files/` 下的所有图片，分两步处理：先用 OCR 快速分类，再分类型转换。
 
-> **路径差异**：方案A 的图片直接在 `【文件名】.files/` 下；方案B 的图片在 `【文件名】.files/media/` 子目录下。取图前先确认实际位置（pandoc 路径建议先把 media/ 里的图片平铺到 `【文件名】.files/` 再分类）。
+> **路径差异**：方案A 的图片直接在 `【文件名】.files/` 下；方案C 的图片在 `【文件名】.files/media/` 子目录下。取图前先确认实际位置（pandoc 路径建议先把 media/ 里的图片平铺到 `【文件名】.files/` 再分类）。
 
 #### 3.1 快速分类（ocr_classify.py）
 
@@ -196,7 +222,7 @@ python ./scripts/ocr_classify.py "【输入文件路径】/tmp/【文件名】.f
 2. 输出的md文件，表格是否有没有对齐的问题，是否有表格内容被拆分成多个表格的情况。
 3. 输出的md文件，标题的编号是否出现错误，标题的层级是否正确。
 4. 基于输出的md文件的结构，优化文章的标题等级和文章的格式，使其符合标准的markdown文档格式，比如标题等级、标题编号、段与段之间加空格等。
-5. **pandoc 路径（方案B）专项核查**——方案A（WPS / Word）路径一般无此类问题，pandoc 的 docx 解析器会引入以下系统性差异，需对照导出的 HTML 源码逐项修复：
+5. **pandoc 路径（方案C）专项核查**——方案A（WPS / Word）路径一般无此类问题，pandoc 的 docx 解析器会引入以下系统性差异，需对照导出的 HTML 源码逐项修复：
    1) **自动编号丢失真实序号**：Word/WPS 里用"自动编号"的章/节标题（如"六、""（二）"），编号由 numbering 定义生成、不在正文文本中，pandoc 会导出为 `<ol start="N">`。若转换脚本忽略 start 属性，序号会全部变回"1."。需 grep HTML 中所有 `<ol start>`，按 start 值还原真实序号（如 `1. 成果及其形成的知识产权` → `## 八、成果及其形成的知识产权`）。
    2) **英文术语粘连或软换行断行**：源文档中分属多个文本块的英文术语，可能输出成 `MQTTBroker`/`iClient3DforWebGL`/`GB/T46237—2025`（粘连），或把 `HTTP API` 拆成两行（断行）。按正确写法逐一修复：拼接时 ASCII↔ASCII 边界补空格，CJK↔CJK 边界直接连接。
    3) **加粗丢失**：整行加粗的章标题不会变成 `#` 标题，需后处理（如 `**一、xxx**` → `## 一、xxx`）；列表项内部的加粗（`<li>` 中的 `<strong>`）会被 `get_text()` 丢弃，需对照 HTML 补回。
@@ -204,4 +230,4 @@ python ./scripts/ocr_classify.py "【输入文件路径】/tmp/【文件名】.f
 
 ### 步骤6：正式输出md文件及图片文件
 
-将 【输入文件路径】/tmp/ 目录下的【md文档名】.md 文件移动到【输入文件路径】目录下，并将 【输入文件路径】/tmp/【文件名】.files/ 目录下的图片文件移动到【输入文件路径】/【文件名】.files/ 目录中（方案B 注意先把 media/ 子目录里的图片平铺到上一层再归位）。
+将 【输入文件路径】/tmp/ 目录下的【md文档名】.md 文件移动到【输入文件路径】目录下，并将 【输入文件路径】/tmp/【文件名】.files/ 目录下的图片文件移动到【输入文件路径】/【文件名】.files/ 目录中（方案C 注意先把 media/ 子目录里的图片平铺到上一层再归位）。

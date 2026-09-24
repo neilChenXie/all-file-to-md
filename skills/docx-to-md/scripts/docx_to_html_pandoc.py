@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""docx -> HTML 转换（pandoc 回退方案）。
+"""docx -> HTML 转换（pandoc 回退方案 C）。
 
-适用场景：
-- 本机未安装 WPS（docx_to_html.ps1 的 WPS COM 路径不可用）；
-- WPS 程序打开着目标文件导致 COM 连接失败、提示用户关闭后重试仍失败。
+适用场景（作为最后回退，方案A、方案B 均不可行时）：
+- 用户无法将 docx 转存为 PDF（如未安装 WPS / Word，或不接受手动操作）；
+- 本机 COM 自动化不可用（未安装 WPS / Microsoft Word、COM 注册异常、程序占用文件等）。
 
 依赖：pypandoc-binary（自带 pandoc 可执行文件，无需单独安装 pandoc）：
   pip install pypandoc-binary -i https://pypi.tuna.tsinghua.edu.cn/simple

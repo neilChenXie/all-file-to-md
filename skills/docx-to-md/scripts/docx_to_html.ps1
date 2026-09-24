@@ -144,7 +144,7 @@ if (-not $converted -or -not (Test-Path $OutputFile)) {
     } else {
         Write-Host ""
         Write-Host "可能原因: 未安装 WPS / Microsoft Word，或 COM 注册异常。"
-        Write-Host "处理办法: 安装 WPS 或 Microsoft Word 后重试；或改用 pandoc 回退脚本:"
+        Write-Host "处理办法: 安装 WPS 或 Microsoft Word 后重试；或提示用户手动将 docx 转存为 PDF 后改用 pdf-img-to-md 技能；或改用 pandoc 回退脚本:"
         $pandocScript = Join-Path $PSScriptRoot "docx_to_html_pandoc.py"
         Write-Host ("  python `"{0}`" `"{1}`" `"{2}`"" -f $pandocScript, $InputFile, $OutputFile)
         Write-Host "  （需先安装依赖: pip install pypandoc-binary）"
