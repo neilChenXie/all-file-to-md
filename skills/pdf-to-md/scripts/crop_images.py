@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-crop_images.py —— 从 PDF/PNG 页面中裁剪/提取图片（pdf-img-to-md skill 步骤8 用）
+crop_images.py —— 从 PDF/PNG 页面中裁剪/提取图片（pdf-to-md skill 步骤8 用）
 
 三种模式：
 

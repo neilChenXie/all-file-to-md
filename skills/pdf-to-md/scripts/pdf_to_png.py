@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（pdf-img-to-md skill 步骤0 用）
+pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（pdf-to-md skill 步骤0 用）
 
 用法:
     python pdf_to_png.py <PDF文件路径> [--dpi 200] [--start-page N] [--end-page N] [--output-dir <目录>]
