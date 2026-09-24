@@ -4,8 +4,15 @@ description: 当用户需要将doc或docx文件转成md文件时，请严格按�
 ---
 
 用户指定的docx文件转化为md文件。
-- 在Windows系统，通过调用wps脚本导出html文件后，再利用python脚本将html文件转换为markdown格式的文档，支持表格、公式、图片等内容的识别和转换。
-- 在mac系统，推荐用户手动通过wps导出html文件后，再利用python脚本将html文件转换为markdown格式的文档，支持表格、公式、图片等内容的识别和转换。
+
+整体链路：**docx → 导出 HTML → 解析为 Markdown → 校验修正 → 正式输出**。其中"docx → HTML"是决定保真度的关键一步，按运行环境分两个方案，产物统一放在 `【输入文件路径】/tmp/【文件名】.html`，后续步骤完全一致：
+
+| 方案 | 脚本 | 原理 | 适用场景 | 保真度 |
+|------|------|------|----------|--------|
+| A（首选） | `docx_to_html.ps1` | 脚本内先试 WPS COM（`Kwps.Application` 等），不可用时自动回退 Microsoft Word COM（`Word.Application`），打开文档后另存为 HTML | Windows 且已安装 WPS 或 Microsoft Word | 高：合并单元格表格、公式、版式还原最好 |
+| B（回退） | `docx_to_html_pandoc.py` | pandoc 转换（pypandoc-binary 自带 pandoc） | 未安装 WPS 与 Microsoft Word；或 WPS/Word 程序打开着目标文件导致 COM 失败、关闭重试后仍失败 | 中：表格结构保留，版式类信息有损，步骤5 需按专项核查清单修复 |
+
+Mac 系统无 COM 自动化，直接使用方案B（pandoc 跨平台），或按方案A 的思路由用户手动用 WPS 将 docx 另存为 html 后放入 tmp 目录。
 
 ## 重要提醒！
 
@@ -21,12 +28,16 @@ description: 当用户需要将doc或docx文件转成md文件时，请严格按�
 * 最终文件：
   - 【输入文件路径】/【文件名】.md
   - 【输入文件路径】/【文件名】.files/【图片名】.png
-  
+
 ## Workflow
 
 ### 步骤1：将docx文件导出为html文件
 
-#### Windows系统
+开始前先做一个判断：文档是否含图片——直接查 docx zip 包内是否存在 `word/media/` 条目（比转换后再 grep HTML 更可靠）。**无图片时，步骤3、步骤4 可整体跳过。**
+
+然后按环境选择方案：Windows 且已安装 WPS 或 Microsoft Word → 方案A（脚本内部先试 WPS，WPS 不可用时自动回退 Microsoft Word，无需手工选择）；两者都不可用，或方案A 失败 → 方案B。
+
+#### 方案A（首选）：WPS / Word COM 导出（Windows）
 
 调用 `./scripts/docx_to_html.ps1` 脚本，将用户指定的docx文件导出为html文件。
 
@@ -47,12 +58,42 @@ description: 当用户需要将doc或docx文件转成md文件时，请严格按�
 .\scripts\docx_to_html.ps1 -InputFile "C:\Users\xxx\document.docx" -OutputFile "【输入文件路径】\tmp\document.html"
 ```
 
-导出后的html文件位于 `【输入文件路径】/tmp/` 目录下，图片文件会被导出到 `【输入文件路径】/tmp/【文件名】.files/` 目录下。
+导出后的html文件位于 `【输入文件路径】/tmp/` 目录下（WPS 路径输出 charset=gb2312 的经典 HTML，Word 路径输出同样带 `【文件名】.files/` 图片目录的经典 HTML），图片文件会被导出到 `【输入文件路径】/tmp/【文件名】.files/` 目录下。
 
-#### Mac/Linux系统
+脚本内的执行顺序为 **WPS → Microsoft Word**：任一成功即返回，两个都失败才报错退出。
 
-用户需要手动通过wps将docx文件导出为html文件，导出后的html文件位于 `【输入文件路径】/tmp/` 目录下。（帮助用户创建 `【输入文件路径】/tmp/` 目录，并提示用户将导出的html文件放入该目录下。）
+**故障排查（重要）：**
 
+1. 若日志先出现「[WARN] WPS COM 连接失败」随后显示「[OK] Word conversion successful」→ 属正常回退，无需处理，继续后续步骤。
+2. 若最终报「WPS 与 Microsoft Word 均无法完成导出」，再看脚本给出的诊断：
+   - **提示 WPS / Word 程序打开着目标文件** → 这是最常见的失败原因：**WPS / Word 打开着目标 docx 文件时，COM 组件无法激活（`New-Object` 会静默失败）或无法打开该文件**。此时必须**提示用户关闭打开了目标文件的 WPS / Word 窗口（保险起见可关闭所有窗口），然后重试**。不要替用户强杀进程，避免丢失未保存的文档。
+   - 用户关闭后重试仍失败，或提示未检测到 WPS / Word 进程 → 大概率未安装 WPS 与 Microsoft Word，或 COM 注册异常。提示用户安装其一后重试，或直接转方案B。
+3. 注意：部分执行环境（如安全策略）会拦截内联的 `New-Object -ComObject` 调用，此时应通过运行本脚本文件的方式触发 COM，而不是在命令行里内联实例化。
+
+#### 方案B（回退）：pandoc 导出（跨平台）
+
+调用 `./scripts/docx_to_html_pandoc.py`，通过 pandoc 完成转换（经 pypandoc-binary 提供可执行文件，无需单独安装 pandoc）。
+
+**依赖准备（一次性）**：在当前 Python 虚拟环境中安装 pypandoc-binary：
+
+```bash
+pip install pypandoc-binary -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+**脚本参数说明：**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `input.docx` | 是 | 输入的 docx 文件路径 |
+| `output.html` | 否 | 输出的 html 文件路径，默认为输入文件同目录下的同名 html 文件 |
+
+**使用示例：**
+
+```bash
+python ./scripts/docx_to_html_pandoc.py "【输入文件路径】/document.docx" "【输入文件路径】/tmp/document.html"
+```
+
+导出为 UTF-8 标准 HTML5，`html_to_markdown.py` 可直接处理。**注意**：pandoc 会把图片提取到 `【输入文件路径】/tmp/【文件名】.files/media/` 子目录（比方案A 多一层 `media/`），步骤3 取图、步骤6 归位时需按此路径处理。
 
 ### 步骤2：将html文件转换为md文件
 
@@ -60,7 +101,7 @@ description: 当用户需要将doc或docx文件转成md文件时，请严格按�
 > - 隔离环境（推荐）：`python -m venv <env>` 后，Windows 用 `<env>\Scripts\pip.exe install beautifulsoup4 lxml`（注意 Windows venv 的 pip 在 `Scripts\` 而非 `bin\`）；再用 `<env>\Scripts\python.exe` 运行脚本。
 > - 之后所有 `python ./scripts/...py` 调用均改用该 venv 的 python 路径。
 
-通过调用 `./scripts/html_to_markdown.py` python脚本，将导出的html文件转换为md文件。
+通过调用 `./scripts/html_to_markdown.py` python脚本，将导出的html文件转换为md文件。脚本自动探测编码，同时兼容方案A 的 WPS/Word HTML（GB2312/GBK）与方案B 的 pandoc HTML（UTF-8 HTML5）。
 
 **脚本参数说明：**
 
@@ -84,6 +125,8 @@ python .\scripts\html_to_markdown.py "【输入文件路径】\tmp\document.html
 ### 步骤3：图片分类与内容识别
 
 对 `【输入文件路径】/tmp/【文件名】.files/` 下的所有图片，分两步处理：先用 OCR 快速分类，再分类型转换。
+
+> **路径差异**：方案A 的图片直接在 `【文件名】.files/` 下；方案B 的图片在 `【文件名】.files/media/` 子目录下。取图前先确认实际位置（pandoc 路径建议先把 media/ 里的图片平铺到 `【文件名】.files/` 再分类）。
 
 #### 3.1 快速分类（ocr_classify.py）
 
@@ -141,19 +184,24 @@ python ./scripts/ocr_classify.py "【输入文件路径】/tmp/【文件名】.f
 
 ### 步骤4：整合图片识别内容
 
-将 步骤3 识别生成的 `【图片名】.md` 文件 和 `not-transfer-img.md` 的内容整合进 步骤2 获取的网页内容md文件中，整合时注意保持原有的内容顺序。
+将 步骤3 识别生成的 【图片名】.md 文件 和 not-transfer-img.md 的内容整合进 步骤2 获取的网页内容md文件中，整合时注意保持原有的内容顺序。
 - 用识别生成的md文件替换原有md文件中对应图片的引用。
-- 对于 `not-transfer-img.md` 中的内容，保持原有md文件中对应图片的引用。
+- 对于 not-transfer-img.md 中的内容，保持原有md文件中对应图片的引用。
 
 ### 步骤5：验证输出结果
 
 按以下步骤review输出的md文档，并修正发现的问题：
-1. `【输入文件路径】/tmp/【文件名】.files/` 目录下的子agent输出的 `【图片名】.md` 和 `not-transfer-img.md` 文件的条目总和是否与图片文件数量一致。
+
+1. 【输入文件路径】/tmp/【文件名】.files/ 目录下的子agent输出的 【图片名】.md 和 not-transfer-img.md 文件的条目总和是否与图片文件数量一致。
 2. 输出的md文件，表格是否有没有对齐的问题，是否有表格内容被拆分成多个表格的情况。
 3. 输出的md文件，标题的编号是否出现错误，标题的层级是否正确。
 4. 基于输出的md文件的结构，优化文章的标题等级和文章的格式，使其符合标准的markdown文档格式，比如标题等级、标题编号、段与段之间加空格等。
+5. **pandoc 路径（方案B）专项核查**——方案A（WPS / Word）路径一般无此类问题，pandoc 的 docx 解析器会引入以下系统性差异，需对照导出的 HTML 源码逐项修复：
+   1) **自动编号丢失真实序号**：Word/WPS 里用"自动编号"的章/节标题（如"六、""（二）"），编号由 numbering 定义生成、不在正文文本中，pandoc 会导出为 `<ol start="N">`。若转换脚本忽略 start 属性，序号会全部变回"1."。需 grep HTML 中所有 `<ol start>`，按 start 值还原真实序号（如 `1. 成果及其形成的知识产权` → `## 八、成果及其形成的知识产权`）。
+   2) **英文术语粘连或软换行断行**：源文档中分属多个文本块的英文术语，可能输出成 `MQTTBroker`/`iClient3DforWebGL`/`GB/T46237—2025`（粘连），或把 `HTTP API` 拆成两行（断行）。按正确写法逐一修复：拼接时 ASCII↔ASCII 边界补空格，CJK↔CJK 边界直接连接。
+   3) **加粗丢失**：整行加粗的章标题不会变成 `#` 标题，需后处理（如 `**一、xxx**` → `## 一、xxx`）；列表项内部的加粗（`<li>` 中的 `<strong>`）会被 `get_text()` 丢弃，需对照 HTML 补回。
+   4) **段落合并/拆分要区分对待**：`<li>` 内多个 `<p>` 会被压成相邻行（段间无空行），而正文 `<p>` 之间有空行——"真软换行"（同一段被拆成多行）要合并，"相邻独立段落"要补空行，不能一刀切。
 
 ### 步骤6：正式输出md文件及图片文件
 
-将 `【输入文件路径】/tmp/【md文档名】.md` 文件移动到`【输入文件路径】/【md文档名】.md`，并将 `【输入文件路径】/tmp/【文件名】.files/` 目录下的图片文件移动到 `【输入文件路径】/【文件名】.files/` 目录中。
-
+将 【输入文件路径】/tmp/ 目录下的【md文档名】.md 文件移动到【输入文件路径】目录下，并将 【输入文件路径】/tmp/【文件名】.files/ 目录下的图片文件移动到【输入文件路径】/【文件名】.files/ 目录中（方案B 注意先把 media/ 子目录里的图片平铺到上一层再归位）。

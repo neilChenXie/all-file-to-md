@@ -1,0 +1,17 @@
+# docx-to-md skill 依赖
+# 安装方式: pip install -r requirements.txt
+
+# OCR 图片分类（ocr_classify.py）
+rapidocr-onnxruntime>=1.3.0
+Pillow>=10.0.0
+
+# HTML 转 Markdown（html_to_markdown.py）
+beautifulsoup4>=4.12.0
+chardet>=5.0.0
+
+# 可选：更快/更准的 OCR 引擎
+# easyocr>=1.7.0       # 中英文混合 OCR，首次运行需下载 ~200MB 模型
+# torch>=2.0.0          # easyocr 依赖（CPU 版约 100MB）
+
+# 可选：本地环境已有（系统自带）
+# python-docx 不需要，skill 通过 WPS 导出 HTML，不直接读 docx

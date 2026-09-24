@@ -1,10 +1,18 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Convert Word document (.docx) to HTML format
+    Convert Word document (.docx) to HTML format via WPS Office / Microsoft Word COM.
 .DESCRIPTION
-    Use WPS Office or Microsoft Word COM interface to perform Save As operation
-    to get output consistent with WPS Save As HTML
+    Prefer WPS Office COM interface (Kwps.Application) to perform Save As operation,
+    to get output consistent with WPS Save As HTML.
+    If WPS COM is unavailable, fall back to Microsoft Word COM (Word.Application).
+
+    If both COM connections fail, a diagnostic hint is printed:
+    - Target file open in Office -> ask the user to close the WPS/Word window
+                                    holding the target file and retry
+                                    (an open target file blocks COM activation,
+                                    New-Object / Documents.Open fails silently)
+    - Office missing             -> suggest installing WPS or Microsoft Word
 #>
 
 param(
@@ -34,177 +42,121 @@ if (-not $OutputFile) {
     $OutputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
 }
 
-$OutputDir = [System.IO.Path]::GetDirectoryName($OutputFile)
+# Word save format constant (wdFormatHTML)
+$wdFormatHTML = 8
 
 Write-Host "Converting: $InputFile"
 Write-Host "Output: $OutputFile"
 
-# Word save format constants
-$wdFormatHTML = 8
 $converted = $false
 
-# Try WPS Office
-function Convert-UsingWPS {
-    param($inPath, $outPath)
-    $wps = $null
-    $doc = $null
+# ------------------------------ 1) Try WPS Office ------------------------------
+Write-Host "Trying WPS Office..."
+$wps = $null
+$doc = $null
+$wpsConnected = $false
 
-    try {
-        Write-Host "Trying WPS Office..."
-        $progs = @("Kwps.Application", "Wps.Application", "Kingsoft.WPS.Application")
+try {
+    $progs = @("Kwps.Application", "Wps.Application", "Kingsoft.WPS.Application")
 
-        foreach ($prog in $progs) {
-            try {
-                $wps = New-Object -ComObject $prog -ErrorAction Stop
-                Write-Host "Connected to: $prog"
-                break
-            } catch { continue }
-        }
+    foreach ($prog in $progs) {
+        try {
+            $wps = New-Object -ComObject $prog -ErrorAction Stop
+            Write-Host "Connected to: $prog"
+            $wpsConnected = $true
+            break
+        } catch { continue }
+    }
 
-        if (-not $wps) { return $false }
-
+    if (-not $wpsConnected) {
+        Write-Host "[WARN] WPS COM 连接失败（已尝试: $($progs -join ' / ')）"
+    } else {
         $wps.Visible = $false
-        $doc = $wps.Documents.Open($inPath)
-        $doc.SaveAs($outPath, [ref]$wdFormatHTML)
-
+        $doc = $wps.Documents.Open($InputFile)
+        $doc.SaveAs($OutputFile, [ref]$wdFormatHTML)
+        $converted = $true
         Write-Host "[OK] WPS conversion successful"
-        return $true
-    }
-    catch {
-        Write-Host "WPS failed: $_"
-        return $false
-    }
-    finally {
-        if ($doc) {
-            $doc.Close($false)
-            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($doc) | Out-Null
-        }
-        if ($wps) {
-            $wps.Quit()
-            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($wps) | Out-Null
-        }
     }
 }
+catch {
+    Write-Host "WPS failed: $_"
+}
+finally {
+    if ($doc) {
+        try { $doc.Close($false) } catch {}
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($doc) | Out-Null
+    }
+    if ($wps) {
+        try { $wps.Quit() } catch {}
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($wps) | Out-Null
+    }
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+}
 
-# Try Microsoft Word
-function Convert-UsingWord {
-    param($inPath, $outPath)
+# --------------------------- 2) Try Microsoft Word ---------------------------
+if (-not $converted) {
+    Write-Host ""
+    Write-Host "Trying Microsoft Word..."
     $word = $null
-    $doc = $null
+    $wordDoc = $null
 
     try {
-        Write-Host "Trying Microsoft Word..."
         $word = New-Object -ComObject "Word.Application" -ErrorAction Stop
         Write-Host "Connected to Microsoft Word"
 
         $word.Visible = $false
         $word.DisplayAlerts = 0
 
-        $doc = $word.Documents.Open($inPath)
-        $doc.SaveAs([ref]$outPath, [ref]$wdFormatHTML)
-
+        $wordDoc = $word.Documents.Open($InputFile)
+        $wordDoc.SaveAs([ref]$OutputFile, [ref]$wdFormatHTML)
+        $converted = $true
         Write-Host "[OK] Word conversion successful"
-        return $true
     }
     catch {
         Write-Host "Word failed: $_"
-        return $false
     }
     finally {
-        if ($doc) {
-            $doc.Close([ref]$false)
-            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($doc) | Out-Null
+        if ($wordDoc) {
+            try { $wordDoc.Close([ref]$false) } catch {}
+            [System.Runtime.Interopservices.Marshal]::ReleaseComObject($wordDoc) | Out-Null
         }
         if ($word) {
-            $word.Quit()
+            try { $word.Quit() } catch {}
             [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
         }
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
     }
 }
 
-# Try LibreOffice
-function Convert-UsingLibreOffice {
-    param($inPath, $outPath)
+# ---------------------------- Failure diagnostics ----------------------------
+if (-not $converted -or -not (Test-Path $OutputFile)) {
+    Write-Host ""
+    Write-Host "[ERROR] WPS 与 Microsoft Word 均无法完成导出"
 
-    try {
-        Write-Host "Trying LibreOffice..."
-        $paths = @(
-            "C:\Program Files\LibreOffice\program\soffice.exe",
-            "C:\Program Files (x86)\LibreOffice\program\soffice.exe"
-        )
-
-        $soffice = $null
-        foreach ($p in $paths) {
-            if (Test-Path $p) { $soffice = $p; break }
-        }
-
-        if (-not $soffice) {
-            $cmd = Get-Command "soffice" -ErrorAction SilentlyContinue
-            if ($cmd) { $soffice = $cmd.Source }
-        }
-
-        if (-not $soffice) { return $false }
-
-        $proc = Start-Process -FilePath $soffice `
-            -ArgumentList @("--headless","--convert-to","html","--outdir",$OutputDir,$inPath) `
-            -Wait -PassThru -WindowStyle Hidden
-
-        if ($proc.ExitCode -eq 0) {
-            $expected = [System.IO.Path]::Combine($OutputDir,
-                [System.IO.Path]::GetFileNameWithoutExtension($inPath) + ".html")
-
-            if ((Test-Path $expected) -and ($expected -ne $outPath)) {
-                Move-Item -Path $expected -Destination $outPath -Force
-            }
-            Write-Host "[OK] LibreOffice conversion successful"
-            return $true
-        }
-        return $false
+    # 诊断：WPS / Word 是否正在运行（若其中打开着目标文件，COM 将无法激活或打开该文件，New-Object 会静默失败）
+    $running = Get-Process -Name "wps", "wpspdf", "et", "wpp", "winword" -ErrorAction SilentlyContinue
+    if ($running) {
+        Write-Host ""
+        Write-Host "可能原因: WPS / Word 程序打开着目标文件，COM 组件无法激活。"
+        Write-Host "处理办法: 请关闭打开了目标文件的 WPS / Word 窗口（保险起见关闭所有窗口）后，重新运行本脚本重试。"
+    } else {
+        Write-Host ""
+        Write-Host "可能原因: 未安装 WPS / Microsoft Word，或 COM 注册异常。"
+        Write-Host "处理办法: 安装 WPS 或 Microsoft Word 后重试；或改用 pandoc 回退脚本:"
+        $pandocScript = Join-Path $PSScriptRoot "docx_to_html_pandoc.py"
+        Write-Host ("  python `"{0}`" `"{1}`" `"{2}`"" -f $pandocScript, $InputFile, $OutputFile)
+        Write-Host "  （需先安装依赖: pip install pypandoc-binary）"
     }
-    catch {
-        Write-Host "LibreOffice failed: $_"
-        return $false
-    }
+    exit 1
 }
-
-# Try Pandoc
-function Convert-UsingPandoc {
-    param($inPath, $outPath)
-
-    try {
-        Write-Host "Trying Pandoc..."
-        $cmd = Get-Command "pandoc" -ErrorAction SilentlyContinue
-        if (-not $cmd) { return $false }
-
-        $mediaDir = [System.IO.Path]::Combine($OutputDir,
-            [System.IO.Path]::GetFileNameWithoutExtension($outPath) + ".files")
-
-        & pandoc --standalone --from docx --to html `
-            --extract-media="$mediaDir" --output="$outPath" "$inPath"
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "[OK] Pandoc conversion successful"
-            return $true
-        }
-        return $false
-    }
-    catch {
-        Write-Host "Pandoc failed: $_"
-        return $false
-    }
-}
-
-# Execute conversions in order
-if (-not $converted) { $converted = Convert-UsingWPS $InputFile $OutputFile }
-if (-not $converted) { $converted = Convert-UsingWord $InputFile $OutputFile }
-if (-not $converted) { $converted = Convert-UsingPandoc $InputFile $OutputFile }
-if (-not $converted) { $converted = Convert-UsingLibreOffice $InputFile $OutputFile }
 
 # Cleanup
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
 
-if ($converted -and (Test-Path $OutputFile)) {
+if (Test-Path $OutputFile) {
     $size = (Get-Item $OutputFile).Length
     Write-Host ""
     Write-Host "========================================"
@@ -215,14 +167,6 @@ if ($converted -and (Test-Path $OutputFile)) {
     exit 0
 } else {
     Write-Host ""
-    Write-Host "========================================"
-    Write-Host "[ERROR] All conversion methods failed"
-    Write-Host ""
-    Write-Host "Please install one of the following:"
-    Write-Host "  1. WPS Office (https://www.wps.cn)"
-    Write-Host "  2. Microsoft Word"
-    Write-Host "  3. Pandoc (https://pandoc.org)"
-    Write-Host "  4. LibreOffice (https://www.libreoffice.org)"
-    Write-Host "========================================"
+    Write-Host "[ERROR] 脚本执行完成但未生成输出文件"
     exit 1
 }

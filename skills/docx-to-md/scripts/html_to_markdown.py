@@ -86,10 +86,18 @@ def convert_list(lst, ordered=False, level=0):
     result = []
     items = lst.find_all('li', recursive=False)
 
+    # 尊重 <ol start="N">：Word/WPS 自动编号段落常导出为带 start 的有序列表
+    start = 1
+    if ordered:
+        try:
+            start = int(lst.get('start', 1) or 1)
+        except (TypeError, ValueError):
+            start = 1
+
     for i, item in enumerate(items):
         indent = "  " * level
         if ordered:
-            prefix = f"{indent}{i+1}. "
+            prefix = f"{indent}{start + i}. "
         else:
             prefix = f"{indent}- "
 
