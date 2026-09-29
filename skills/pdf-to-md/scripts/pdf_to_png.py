@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（pdf-to-md skill 步骤0 用）
+r"""
+pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（pdf-to-md skill 步骤4.1 / 3.2 用）
 
 用法:
     python pdf_to_png.py <PDF文件路径> [--dpi 200] [--start-page N] [--end-page N] [--output-dir <目录>]
 
 默认输出目录:
-    <PDF所在目录>/tmp/        （即【输入文件路径】/tmp/）
+    <PDF所在目录>/tmp_<清洗后PDF文件名>/        （即 skill 的【图片目录】；每个 PDF 独占
+    一份，同一目录下多份 PDF 并行处理时只清理/写入各自的临时目录，互不干扰）
 
 命名规则:
-    <PDF文件名>_01.png、<PDF文件名>_02.png ...（页码宽度按总页数自动补零，
-    如 150 页则命名为 _001.png ~ _150.png，满足 skill 步骤1 的前缀判断规则）
+    <清洗后PDF文件名>_01.png、<清洗后PDF文件名>_02.png ...（页码宽度按总页数自动补零，
+    如 150 页则命名为 _001.png ~ _150.png，满足 skill 步骤4.2 的前缀判断规则）
+    文件名中的空格及其他非法字符（\ / : * ? " < > | 及控制字符）替换为下划线 _。
 
 依赖:
     PyMuPDF (pymupdf)        安装命令: pip install pymupdf
@@ -22,6 +24,7 @@ pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（p
 """
 import argparse
 import os
+import re
 import sys
 
 try:
@@ -43,6 +46,13 @@ except ImportError:
         print("        pip install pymupdf", file=sys.stderr)
         sys.exit(1)
 
+# 文件名清洗规则（与 skill 的【清洗后输入文件名】一致）：空格及非法字符 → 下划线
+_ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+
+
+def sanitize_name(name: str) -> str:
+    return _ILLEGAL_CHARS.sub("_", name).replace(" ", "_")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="将 PDF 文件逐页导出为 PNG 图片")
@@ -54,7 +64,7 @@ def main() -> None:
     parser.add_argument("--end-page", type=int, default=0,
                         help="结束页码（含），0 表示导出到最后一页（默认 0）")
     parser.add_argument("--output-dir", default="",
-                        help="自定义输出目录（默认：<PDF所在目录>/tmp/）")
+                        help="自定义输出目录（默认：<PDF所在目录>/tmp_<清洗后PDF文件名>/）")
     args = parser.parse_args()
 
     pdf_path = os.path.abspath(args.pdf_path)
@@ -65,11 +75,11 @@ def main() -> None:
         print(f"[ERROR] 不是 PDF 文件（请提供 .pdf 后缀的文件）: {pdf_path}", file=sys.stderr)
         sys.exit(2)
 
-    out_dir = os.path.abspath(args.output_dir) if args.output_dir else \
-        os.path.join(os.path.dirname(pdf_path), "tmp")
-    os.makedirs(out_dir, exist_ok=True)
+    prefix = sanitize_name(os.path.splitext(os.path.basename(pdf_path))[0])
 
-    prefix = os.path.splitext(os.path.basename(pdf_path))[0]
+    out_dir = os.path.abspath(args.output_dir) if args.output_dir else \
+        os.path.join(os.path.dirname(pdf_path), "tmp_" + prefix)
+    os.makedirs(out_dir, exist_ok=True)
 
     try:
         doc = fitz.open(pdf_path)

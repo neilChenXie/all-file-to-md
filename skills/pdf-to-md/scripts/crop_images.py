@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-crop_images.py —— 从 PDF/PNG 页面中裁剪/提取图片（pdf-to-md skill 步骤8 用）
+crop_images.py —— 从 PDF/PNG 页面中裁剪/提取图片（pdf-to-md skill 步骤4.8 用）
 
 三种模式：
 
@@ -30,8 +30,8 @@ crop_images.py —— 从 PDF/PNG 页面中裁剪/提取图片（pdf-to-md skill
     # PDF 坐标裁剪
     python crop_images.py D:/docs/scan.pdf --page 10 --bbox "0.115,0.195,0.910,0.785" --output fig1.png
     
-    # PNG 坐标裁剪（直接裁剪PNG图片）
-    python crop_images.py D:/tmp/page_12.png --bbox "0.115,0.195,0.910,0.785" --output fig1.png
+    # PNG 坐标裁剪（直接裁剪【图片目录】下的页面图，目录名形如 tmp_<清洗后PDF文件名>）
+    python crop_images.py "D:/docs/tmp_report/report_12.png" --bbox "0.115,0.195,0.910,0.785" --output fig1.png
     
     # PDF 嵌入图提取
     python crop_images.py D:/docs/ebook.pdf --page 3 --extract-embedded --output-dir D:/imgs
