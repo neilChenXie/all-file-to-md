@@ -11,6 +11,11 @@
     - 通用标题识别（不依赖特定领域词汇）：先按字号/加粗启发式，再按通用中文文档模式，
       提升为 ###/#### 小节标题，文首生成可跳转目录
     - 版式特殊的文档可用 --title-pats 追加标题正则，无需修改代码
+    - 乱码守卫：文本层内容为乱码（字体缺 ToUnicode 映射/编码错乱）时放弃直提——
+      多数页乱码直接退出且不生成输出文件（改走图片 OCR 路线），个别乱码页不入正文、
+      仅留注释待按 SKILL 3.2 用图像识别回退
+
+退出码: 0 = 成功, 2 = 参数/依赖错误, 3 = 文本层为乱码已放弃直提。
 
 依赖: PyMuPDF (pip install pymupdf)
 """
@@ -68,6 +73,52 @@ def is_bold_font(font):
     except (UnicodeEncodeError, UnicodeDecodeError):
         return False
     return '黑' in fixed or '粗' in fixed
+
+
+# --- 文本层乱码检测（与 check_textlayer.py 中同名实现保持一致）---
+# 0x80~0xFF 区间在正常文档中也常见的合法符号（不计入乱码）
+LAT1_KEEP = set('·×÷±°§µ¥£©®')
+# 字体缺映射时 PyMuPDF 可能输出的 (cid:N) 占位符
+CID_RE = re.compile(r'\(cid:\s*\d+\s*\)')
+# 单一字符高重复判定时排除的中文常用标点（ASCII 标点已由 ord>127 条件排除）
+TOP_CH_KEEP = set('，。、；：？！…—－·（）《》“”‘’【】')
+
+
+def garbled_signals(text):
+    """评估文本层文本的乱码特征，返回 (suspect_ratio, reasons)。
+
+    乱码典型成因是字体缺 ToUnicode 映射或编码转换错误，特征：
+    1. 无效字符占比高：替换符 U+FFFD、私用区字符、控制符、(cid:N) 占位符；
+    2. Latin-1 补充区（U+0080~U+00FF）字符占比高（如 "ä¸æ–‡"），
+       正常中英文文档该区间字符占比极低；
+    3. 单一非 ASCII 字符高度重复：字体映射错乱时整段文本落到同一码位；
+    4. 经典乱码串 "锟斤拷"。
+    """
+    s = ''.join(ch for ch in text if not ch.isspace())
+    n = len(s)
+    if n < 30:
+        return 0.0, []
+    reasons = []
+    n_def = sum(1 for ch in s if ch == '\ufffd' or ord(ch) < 32
+                or 0x80 <= ord(ch) <= 0x9F or 0xE000 <= ord(ch) <= 0xF8FF)
+    n_def += sum(len(m) for m in CID_RE.findall(text))
+    ratio_def = n_def / n
+    if ratio_def >= 0.05:
+        reasons.append('无效字符（替换符/私用区/(cid:)占位符）占比 %.0f%%' % (100 * ratio_def))
+    n_lat1 = sum(1 for ch in s if 0x80 <= ord(ch) <= 0xFF and ch not in LAT1_KEEP)
+    ratio_lat1 = n_lat1 / n
+    if ratio_lat1 >= 0.25:
+        reasons.append('Latin-1 补充区字符占比 %.0f%%（编码错乱特征）' % (100 * ratio_lat1))
+    cnt = {}
+    for ch in s:
+        cnt[ch] = cnt.get(ch, 0) + 1
+    top_ch, top_n = max(cnt.items(), key=lambda kv: kv[1])
+    ratio_top = top_n / n
+    if n >= 50 and ratio_top >= 0.40 and ord(top_ch) > 127 and top_ch not in TOP_CH_KEEP:
+        reasons.append('单一字符 %s 占比 %.0f%%（字体映射错乱特征）' % (top_ch, 100 * ratio_top))
+    if '锟斤拷' in text:
+        reasons.append('出现经典乱码串“锟斤拷”')
+    return max(ratio_def, ratio_lat1, ratio_top), reasons
 
 
 def heading_level(line, body_size):
@@ -217,6 +268,27 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
     fallback_pages = []
     n_tables = 0
 
+    # --- 乱码守卫：文本层为乱码时放弃直提（乱码多由字体缺 ToUnicode 映射/编码错乱造成）---
+    garbled_pages = {}   # {pno: reasons}
+    evaluated = 0
+    for i, page in enumerate(doc):
+        txt = page.get_text()
+        if len(''.join(txt.split())) < 30:
+            continue
+        evaluated += 1
+        _, reasons = garbled_signals(txt)
+        if reasons:
+            garbled_pages[i + 1] = reasons
+    if evaluated and len(garbled_pages) * 2 >= evaluated:
+        print('检测到文本层为乱码：%d/%d 个有效内容页命中乱码特征（如第 %s 页），'
+              % (len(garbled_pages), evaluated,
+                 '、'.join(map(str, sorted(garbled_pages)[:5]))), file=sys.stderr)
+        for p in sorted(garbled_pages)[:3]:
+            print('  第 %d 页: %s' % (p, '；'.join(garbled_pages[p])), file=sys.stderr)
+        print('已放弃文本层提取，未生成输出文件。请改走图片 OCR 路线（SKILL 步骤4）：'
+              'python -X utf8 pdf_to_png.py <pdf> 导出 PNG 后交多模态子agent识别。', file=sys.stderr)
+        sys.exit(3)
+
     # --- 预扫描：逐页提取文本行（含元数据、移除页脚），统计正文众数字号 ---
     page_rows = []   # (pno, page, kept_lines, docpage)
     size_weight = {}
@@ -227,12 +299,23 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
         if docpage:
             docpage_map[i + 1] = docpage
         page_rows.append((i + 1, page, kept, docpage))
+        if i + 1 in garbled_pages:
+            continue   # 乱码页不参与正文字号统计
         for L in kept:
             key = round(L['size'], 1)
             size_weight[key] = size_weight.get(key, 0) + len(L['txt'])
     body_size = max(size_weight, key=size_weight.get) if size_weight else None
 
     for pno, page, kept, docpage in page_rows:
+        if pno in garbled_pages:
+            # 乱码页不直提：留注释，按 SKILL 3.2 导出 PNG 后用图像识别回退
+            pages_out.append('## 第 ' + str(pno) + ' 页')
+            pages_out.append('')
+            pages_out.append('<!-- 本页文本层乱码，已放弃直提（%s）：'
+                             '请导出本页 PNG 后用多模态子agent识别，替换本注释 -->'
+                             % '；'.join(garbled_pages[pno]))
+            pages_out.append('')
+            continue
         # --- 表格检测与过滤 ---
         # 条件: >=2行x2列且<=12列（超多列是无竖线正文被横线切割的伪表格）；
         #       非空列占比<=0.5且最长单元格<=60字（正文段落被框线围住的伪表格）；
@@ -378,6 +461,9 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
                       + '（已用页脚逐页验证，' + str(len(docpage_map)) + '/' + str(doc.page_count)
                       + ' 页命中；无页脚页：' + ', '.join(map(str, no_footer)) + '）')
     header.append('> - 各页页脚（页码、打印日期等）已移除，其余正文内容全部保留')
+    if garbled_pages:
+        header.append('> - 文本层乱码回退页（未直提，需按 3.2 用图像识别补充）：'
+                      + ', '.join(map(str, sorted(garbled_pages))))
     header.append('')
     header.append('## 目录')
     header.append('')
@@ -393,7 +479,9 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
         f.write(content)
 
     print('输出: %s | 大小 %.1f KB' % (out_path, len(content.encode('utf-8')) / 1024))
-    print('还原表格数: %d | 校验回退页: %s' % (n_tables, fallback_pages if fallback_pages else '无'))
+    print('还原表格数: %d | 校验回退页: %s | 乱码回退页: %s' % (
+        n_tables, fallback_pages if fallback_pages else '无',
+        sorted(garbled_pages) if garbled_pages else '无'))
     print('页脚命中: %d/%d | 章节标题: %d' % (len(docpage_map), doc.page_count, len(toc_entries)))
 
 
