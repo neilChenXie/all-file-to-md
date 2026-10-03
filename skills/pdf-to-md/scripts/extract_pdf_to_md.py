@@ -5,15 +5,15 @@
     python -X utf8 extract_pdf_to_md.py <pdf路径> [-o 输出.md] [--title-pats 正则 ...]
 
 功能:
-    - 逐页提取文本层（PyMuPDF，非 OCR），按页输出 "## 第 N 页" 分节
+    - 逐页提取文本层（PyMuPDF，非 OCR），以 "<!-- 第 N 页 -->" 注释标注分页
     - 带框线表格还原为 Markdown 表格（find_tables + 伪表格过滤 + 覆盖校验）
     - 页脚（页码/打印日期/居中页码行）识别并移除，页码映射写入提取说明
     - 通用标题识别（不依赖特定领域词汇）：先按字号/加粗启发式，再按通用中文文档模式，
-      提升为 ###/#### 小节标题，文首生成可跳转目录
+      章节标题从 h2 起逐级提升（##/###）
     - 版式特殊的文档可用 --title-pats 追加标题正则，无需修改代码
     - 乱码守卫：文本层内容为乱码（字体缺 ToUnicode 映射/编码错乱）时放弃直提——
-      多数页乱码直接退出且不生成输出文件（改走图片 OCR 路线），个别乱码页不入正文、
-      仅留注释待按 SKILL 3.2 用图像识别回退
+      乱码页占有效内容页 ≥5% 时直接退出且不生成输出文件（改走图片 OCR 路线），
+      个别乱码页（<5%）不入正文、仅留注释待按 SKILL 3.2 用图像识别回退
 
 退出码: 0 = 成功, 2 = 参数/依赖错误, 3 = 文本层为乱码已放弃直提。
 
@@ -37,13 +37,13 @@ BR = '<br>'    # 单元格内换行
 # --- 章节标题模式（整行、去空格归一化后匹配；通用中文文档模式，特殊文档用 --title-pats 追加）---
 # 标题尾部字符类排除数字/点/逗号/句号，避免把目录条目（引导点+页码结尾）误判为标题
 NO_TAIL = r'[^0-9.,，。]'
-TITLE_SEC_PATS = [   # 提升为 ###，并进目录
+TITLE_SEC_PATS = [   # 提升为 ##
     re.compile(r'^第[一二三四五六七八九十百0-9]+[章节篇]' + NO_TAIL + r'{0,20}$'),
     re.compile(r'^(?:附录|附件)[0-9]{0,2}' + NO_TAIL + r'{0,20}$'),
     re.compile(r'^附表\d+[:：].{0,25}$'),
     re.compile(r'^(?:引言|前言|概述|总则|简介)$'),
 ]
-TITLE_SUB_PATS = [   # 提升为 ####
+TITLE_SUB_PATS = [   # 提升为 ###
     re.compile(r'^目录$'),
     re.compile(r'^第[一二三四五六七八九十百]+部分[^0-9]{0,15}$'),
     re.compile(r'^\d{1,2}．\S.{0,20}$'),
@@ -122,13 +122,13 @@ def garbled_signals(text):
 
 
 def heading_level(line, body_size):
-    """通用标题启发式（不依赖领域词汇），返回 3/4/None：
-    - 行字号显著大于正文众数字号（>= +1pt）-> ###；
-    - 整行加粗且不小于正文字号的短行 -> ####。"""
+    """通用标题启发式（不依赖领域词汇），返回 2/3/None（章节标题从 h2 起逐级安排）：
+    - 行字号显著大于正文众数字号（>= +1pt）-> ##；
+    - 整行加粗且不小于正文字号的短行 -> ###。"""
     if body_size and line['size'] >= body_size + 1:
-        return 3
+        return 2
     if body_size and line['bold'] and line['size'] >= body_size and len(norm(line['txt'])) <= 30:
-        return 4
+        return 3
     return None
 
 
@@ -261,7 +261,7 @@ def render_table(data):
 
 def extract(pdf_path, out_path, extra_sec_pats=()):
     doc = fitz.open(pdf_path)
-    toc_entries = []
+    n_titles = 0
     pages_out = []
     docpage_map = {}
     doc_total = None
@@ -279,8 +279,8 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
         _, reasons = garbled_signals(txt)
         if reasons:
             garbled_pages[i + 1] = reasons
-    if evaluated and len(garbled_pages) * 2 >= evaluated:
-        print('检测到文本层为乱码：%d/%d 个有效内容页命中乱码特征（如第 %s 页），'
+    if evaluated and len(garbled_pages) / evaluated >= 0.05:
+        print('检测到文本层为乱码（乱码页占有效内容页 ≥5%%）：%d/%d 个有效内容页命中乱码特征（如第 %s 页），'
               % (len(garbled_pages), evaluated,
                  '、'.join(map(str, sorted(garbled_pages)[:5]))), file=sys.stderr)
         for p in sorted(garbled_pages)[:3]:
@@ -309,7 +309,7 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
     for pno, page, kept, docpage in page_rows:
         if pno in garbled_pages:
             # 乱码页不直提：留注释，按 SKILL 3.2 导出 PNG 后用图像识别回退
-            pages_out.append('## 第 ' + str(pno) + ' 页')
+            pages_out.append('<!-- 第 ' + str(pno) + ' 页 -->')
             pages_out.append('')
             pages_out.append('<!-- 本页文本层乱码，已放弃直提（%s）：'
                              '请导出本页 PNG 后用多模态子agent识别，替换本注释 -->'
@@ -404,8 +404,8 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
             promoted = False
             if any(pat.match(n) for pat in extra_sec_pats):
                 # 用户显式指定的标题正则优先，且不受内置防误判约束
-                out_lines.append('### ' + txt)
-                toc_entries.append((pno, norm(txt)))
+                out_lines.append('## ' + txt)
+                n_titles += 1
                 promoted = True
             elif (len(n) <= 45 and not n.startswith(BODY_START_BAD)
                     and not NO_TITLE_PUNCT.search(n)
@@ -416,18 +416,18 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
                         lvl = 3
                     elif any(pat.match(n) for pat in TITLE_SUB_PATS):
                         lvl = 4
-                if lvl == 3:
-                    out_lines.append('### ' + txt)
-                    toc_entries.append((pno, norm(txt)))
+                if lvl == 2:
+                    out_lines.append('## ' + txt)
+                    n_titles += 1
                     promoted = True
-                elif lvl == 4:
-                    out_lines.append('#### ' + txt)
+                elif lvl == 3:
+                    out_lines.append('### ' + txt)
                     promoted = True
             if not promoted:
                 out_lines.append(escape_line(txt))
         while out_lines and out_lines[-1] == '':
             out_lines.pop()
-        pages_out.append('## 第 ' + str(pno) + ' 页')
+        pages_out.append('<!-- 第 ' + str(pno) + ' 页 -->')
         pages_out.append('')
         pages_out.extend(out_lines)
         pages_out.append('')
@@ -465,15 +465,6 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
         header.append('> - 文本层乱码回退页（未直提，需按 3.2 用图像识别补充）：'
                       + ', '.join(map(str, sorted(garbled_pages))))
     header.append('')
-    header.append('## 目录')
-    header.append('')
-    header.append('| PDF 页 | 文档页码 | 章节 |')
-    header.append('|:---:|:---:|---|')
-    for p, t in toc_entries:
-        dd = docpage_map.get(p, '-')
-        header.append('| ' + str(p) + ' | ' + str(dd) + ' | [' + t + '](#第-' + str(p) + '-页) |')
-    header.append('')
-
     content = '\n'.join(header) + '\n' + '\n'.join(pages_out)
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -482,7 +473,7 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
     print('还原表格数: %d | 校验回退页: %s | 乱码回退页: %s' % (
         n_tables, fallback_pages if fallback_pages else '无',
         sorted(garbled_pages) if garbled_pages else '无'))
-    print('页脚命中: %d/%d | 章节标题: %d' % (len(docpage_map), doc.page_count, len(toc_entries)))
+    print('页脚命中: %d/%d | 章节标题: %d' % (len(docpage_map), doc.page_count, n_titles))
 
 
 def main():
@@ -492,7 +483,7 @@ def main():
     parser.add_argument('pdf', help='PDF 文件路径')
     parser.add_argument('-o', '--output', help='输出 .md 路径（默认与 PDF 同目录同名）')
     parser.add_argument('--title-pats', action='append', default=[], metavar='REGEX',
-                        help='追加章节标题正则（可多次传入），命中的独立短行提升为 ### 并进目录')
+                        help='追加章节标题正则（可多次传入），命中的独立短行提升为 ##')
     args = parser.parse_args()
     out = args.output or os.path.splitext(args.pdf)[0] + '.md'
     extra = []

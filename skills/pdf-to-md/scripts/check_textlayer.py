@@ -5,7 +5,8 @@
     python -X utf8 check_textlayer.py <pdf路径> [--json]
 
 判定: 全文档可提取字符 > 100 且 非零文本页占比 >= 50% 视为有文本层。
-      文本层存在但内容乱码（字体缺 ToUnicode 映射/编码错乱等）时不可直提，
+      文本层存在但内容乱码（字体缺 ToUnicode 映射/编码错乱等）时不可直提：
+      乱码页占有效内容页 >= 5% 即判为乱码（退出码 3），
       应放弃文本层提取、改走图片 OCR 路线。
 退出码: 0 = 有文本层且可用, 1 = 无文本层, 2 = 出错, 3 = 有文本层但为乱码。
 依赖: PyMuPDF (pip install pymupdf)
@@ -90,7 +91,7 @@ def main():
     zero_pages = [i + 1 for i, c in enumerate(page_chars) if c == 0]
     has_textlayer = total > 100 and nonempty >= doc.page_count * 0.5
 
-    # --- 乱码检测：逐页评估，多数内容页乱码 -> 文本层不可直提（应走图片 OCR 路线）---
+    # --- 乱码检测：逐页评估，乱码页占有效内容页 >=5% -> 文本层不可直提（应走图片 OCR 路线）---
     garbled_pages = []
     evaluated = 0
     for i, txt in enumerate(page_texts):
@@ -102,7 +103,7 @@ def main():
             garbled_pages.append({'page': i + 1,
                                   'suspect_ratio': round(ratio, 3),
                                   'reasons': reasons})
-    garbled = has_textlayer and evaluated > 0 and len(garbled_pages) * 2 >= evaluated
+    garbled = has_textlayer and evaluated > 0 and len(garbled_pages) / evaluated >= 0.05
 
     result = {
         'pdf': pdf_path,
@@ -131,7 +132,7 @@ def main():
             for g in garbled_pages[:3]:
                 print('  - 第 %d 页: %s' % (g['page'], '；'.join(g['reasons'])))
         if garbled:
-            print('结论: 有文本层但为乱码，不可直接提取 —— 放弃文本层提取，走图片 OCR 路线')
+            print('结论: 乱码页占比 ≥5%，有文本层但为乱码，不可直接提取 —— 放弃文本层提取，走图片 OCR 路线')
         elif has_textlayer:
             extra = ('；个别乱码页（%s）提取后需按 3.2 用图像识别回退'
                      % [g['page'] for g in garbled_pages]) if garbled_pages else ''
