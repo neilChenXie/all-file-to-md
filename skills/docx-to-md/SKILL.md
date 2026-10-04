@@ -26,6 +26,7 @@ Mac 系统无 COM 自动化：优先采用方案B（由用户手动用 WPS / Wor
 * 过程临时文件：
   - 【输入文件路径】/tmp/【文件名】.html
   - 【输入文件路径】/tmp/【文件名】.md
+  - 【输入文件路径】/tmp/【文件名】.疑点清单.md（方案C 且 --checklist 时生成，步骤5 人工核查后可弃）
   - 【输入文件路径】/tmp/【文件名】.files/not-transfer-img.md
   - 【输入文件路径】/tmp/【文件名】.files/【图片名】.md
 * 最终文件：
@@ -119,11 +120,11 @@ pip install pypandoc-binary -i https://pypi.tuna.tsinghua.edu.cn/simple
 python ./scripts/docx_to_html_pandoc.py "【输入文件路径】/document.docx" "【输入文件路径】/tmp/document.html"
 ```
 
-导出为 UTF-8 标准 HTML5，`html_to_markdown.py` 可直接处理。**注意**：pandoc 会把图片提取到 `【输入文件路径】/tmp/【文件名】.files/media/` 子目录（比方案A 多一层 `media/`），步骤3 取图、步骤6 归位时需按此路径处理。
+导出为 UTF-8 标准 HTML5，`html_to_markdown.py` 可直接处理。图片提取到 `【输入文件路径】/tmp/【文件名】.files/` 下（相对路径引用；pandoc 原生的 `media/` 子目录已由脚本自动平铺，与方案A 路径约定完全一致）。
 
 ### 步骤2：将html文件转换为md文件
 
-> **依赖准备（重要）**：`html_to_markdown.py` 依赖 `beautifulsoup4` 与 `lxml`。若运行报 `ModuleNotFoundError: No module named 'bs4'`，需先在隔离的 Python 环境中安装：
+> **依赖准备（重要）**：`html_to_markdown.py` 依赖 `beautifulsoup4` 与 `lxml`（`--docx` 编号回填同样需要 lxml）。若运行报 `ModuleNotFoundError: No module named 'bs4'`，需先在隔离的 Python 环境中安装：
 > - 隔离环境（推荐）：`python -m venv <env>` 后，Windows 用 `<env>\Scripts\pip.exe install beautifulsoup4 lxml`（注意 Windows venv 的 pip 在 `Scripts\` 而非 `bin\`）；再用 `<env>\Scripts\python.exe` 运行脚本。
 > - 之后所有 `python ./scripts/...py` 调用均改用该 venv 的 python 路径。
 
@@ -135,24 +136,29 @@ python ./scripts/docx_to_html_pandoc.py "【输入文件路径】/document.docx"
 |------|------|------|
 | `html_file` | 是 | 输入的 html 文件路径 |
 | `output_md_file` | 否 | 输出的 md 文件路径，默认为输入文件同目录下的同名 md 文件 |
+| `--docx <docx路径>` | 否 | 方案C 编号回填：解析源 docx 的 numbering.xml/document.xml 还原每段真实编号，按 `<li>` ↔ 段落文本对齐回填（修复 pandoc 丢失的多级编号祖先路径）。未命中的 `<li>` 回退 `<ol start>` 还原并打印警告。方案A 路径不传此参数，行为不变 |
+| `--checklist` | 否 | 生成英文粘连/断行疑点清单 `.疑点清单.md`（仅供步骤5 人工核查定位，不自动改写） |
 
 **使用示例：**
 
 ```powershell
-# 基本用法：只指定输入文件，输出到同目录
+# 方案A（WPS/Word HTML）：只指定输入文件，输出到同目录
 python .\scripts\html_to_markdown.py "【输入文件路径】\tmp\document.html"
 
-# 指定输出路径（推荐输出到 【输入文件路径】/tmp/ 目录）
+# 方案A 指定输出路径（推荐输出到 【输入文件路径】/tmp/ 目录）
 python .\scripts\html_to_markdown.py "【输入文件路径】\tmp\document.html" "【输入文件路径】\tmp\document.md"
+
+# 方案C（pandoc HTML）：带源 docx 做编号回填 + 疑点清单
+python ./scripts/html_to_markdown.py "【输入文件路径】/tmp/document.html" "【输入文件路径】/tmp/document.md" --docx "【输入文件路径】/document.docx" --checklist
 ```
 
-转换后的md文件位于 `【输入文件路径】/tmp/` 目录下。
+转换后的md文件位于 `【输入文件路径】/tmp/` 目录下。**方案C 建议始终带 `--docx`（源 docx 即输入文件）与 `--checklist`**；编号回填全部命中时打印 `[OK] 编号回填全部命中`，出现 `[WARN] 编号 <li> 未命中` 时需按警告清单对照原文核对相应列表。
 
 ### 步骤3：图片分类与内容识别
 
 对 `【输入文件路径】/tmp/【文件名】.files/` 下的所有图片，分两步处理：先用 OCR 快速分类，再分类型转换。
 
-> **路径差异**：方案A 的图片直接在 `【文件名】.files/` 下；方案C 的图片在 `【文件名】.files/media/` 子目录下。取图前先确认实际位置（pandoc 路径建议先把 media/ 里的图片平铺到 `【文件名】.files/` 再分类）。
+> **路径差异**：方案A 与方案C 的图片现均直接位于 `【文件名】.files/` 下（方案C 的 `media/` 子目录已由 `docx_to_html_pandoc.py` 自动平铺），取图流程一致。
 
 #### 3.1 快速分类（ocr_classify.py）
 
@@ -222,12 +228,12 @@ python ./scripts/ocr_classify.py "【输入文件路径】/tmp/【文件名】.f
 2. 输出的md文件，表格是否有没有对齐的问题，是否有表格内容被拆分成多个表格的情况。
 3. 输出的md文件，标题的编号是否出现错误，标题的层级是否正确。
 4. 基于输出的md文件的结构，优化文章的标题等级和文章的格式，使其符合标准的markdown文档格式，比如标题等级、标题编号、段与段之间加空格等。
-5. **pandoc 路径（方案C）专项核查**——方案A（WPS / Word）路径一般无此类问题，pandoc 的 docx 解析器会引入以下系统性差异，需对照导出的 HTML 源码逐项修复：
-   1) **自动编号丢失真实序号**：Word/WPS 里用"自动编号"的章/节标题（如"六、""（二）"），编号由 numbering 定义生成、不在正文文本中，pandoc 会导出为 `<ol start="N">`。若转换脚本忽略 start 属性，序号会全部变回"1."。需 grep HTML 中所有 `<ol start>`，按 start 值还原真实序号（如 `1. 成果及其形成的知识产权` → `## 八、成果及其形成的知识产权`）。
-   2) **英文术语粘连或软换行断行**：源文档中分属多个文本块的英文术语，可能输出成 `MQTTBroker`/`iClient3DforWebGL`/`GB/T46237—2025`（粘连），或把 `HTTP API` 拆成两行（断行）。按正确写法逐一修复：拼接时 ASCII↔ASCII 边界补空格，CJK↔CJK 边界直接连接。
-   3) **加粗丢失**：整行加粗的章标题不会变成 `#` 标题，需后处理（如 `**一、xxx**` → `## 一、xxx`）；列表项内部的加粗（`<li>` 中的 `<strong>`）会被 `get_text()` 丢弃，需对照 HTML 补回。
-   4) **段落合并/拆分要区分对待**：`<li>` 内多个 `<p>` 会被压成相邻行（段间无空行），而正文 `<p>` 之间有空行——"真软换行"（同一段被拆成多行）要合并，"相邻独立段落"要补空行，不能一刀切。
+5. **pandoc 路径（方案C）专项核查**——方案A（WPS / Word）路径一般无此类问题。步骤2 已解决其中的系统性项，剩余项按工具辅助 + 人工判断处理：
+   1) **自动编号丢失真实序号** → **已由步骤2 的 `--docx` 编号回填解决**（引擎语义与回归校验见 `test-case/verify_numbering_backfill.py` 与 `test-case/README.md`）。仅需抽查：确认转换日志为 `[OK] 编号回填全部命中`；若有 `[WARN]` 未命中项，按警告清单对照原文核对相应列表。
+   2) **英文术语粘连或软换行断行** → 用 `--checklist` 生成的 `.疑点清单.md` 定位候选（长 ASCII 词内的 小写→大写 / 大写串→小写 / 字母↔数字 边界，及行尾↔行首英文词对），**人工确认后**按正确写法修复：拼接时 ASCII↔ASCII 边界补空格，CJK↔CJK 边界直接连接；注意排除 `iPhone`、`IoT` 等正常专有名词。
+   3) **加粗丢失** → 列表项内加粗已由 `_render_inline` 保留；整行加粗的伪标题不会变成 `#` 标题，需按文档结构后处理（如 `**一、xxx**` → `## 一、xxx`），作为一般格式核查项。
+   4) **段落合并/拆分要区分对待**：`<li>` 内多个 `<p>` 会被压成相邻行（段间无空行），而正文 `<p>` 之间有空行——"真软换行"（同一段被拆成多行）要合并，"相邻独立段落"要补空行，不能一刀切，保留人工判断。
 
 ### 步骤6：正式输出md文件及图片文件
 
-将 【输入文件路径】/tmp/ 目录下的【md文档名】.md 文件移动到【输入文件路径】目录下，并将 【输入文件路径】/tmp/【文件名】.files/ 目录下的图片文件移动到【输入文件路径】/【文件名】.files/ 目录中（方案C 注意先把 media/ 子目录里的图片平铺到上一层再归位）。
+将 【输入文件路径】/tmp/ 目录下的【md文档名】.md 文件移动到【输入文件路径】目录下，并将 【输入文件路径】/tmp/【文件名】.files/ 目录下的图片文件移动到【输入文件路径】/【文件名】.files/ 目录中。
