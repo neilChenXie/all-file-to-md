@@ -19,6 +19,9 @@ desktop.ini
 .vscode/
 *.code-workspace
 
+## Obsidian
+.obsidian/
+
 ## AI Agents & Plugins
 .kilo/
 .claude/

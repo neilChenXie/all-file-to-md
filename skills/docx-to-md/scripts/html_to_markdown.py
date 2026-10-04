@@ -7,6 +7,15 @@ Supports WPS/Word HTML exports (GB2312/GBK) and Pandoc HTML (UTF-8 standard HTML
 还原每段真实编号，按「<li> 文本 ↔ docx 段落文本」对齐回填，修复 pandoc
 丢失的多级编号祖先路径（详见 docx_numbering.py）；未命中的 <li> 回退
 <ol start> 还原逻辑并计入警告。
+
+WPS/Word HTML 增强（test-case-3 揭露）：
+- 条件注释（<!--[if ...]>）与声明节点整节点丢弃，杜绝域代码泄漏为正文；
+- 目录区（p.MsoToc1..9）解析并结构化为 md 链接列表（层级缩进 + 页码后缀）；
+- 编号反哺：目录条目按 _Toc 书签锚点对齐正文标题（未命中退化为归一化文本
+  比对），用目录缓存的真实编号回填正文标题并剥离 mso-list:Ignore 错误缓存；
+- 文本节点保留原有空白（&nbsp; 转空格），修复跨标签空格丢失；
+- 表格 run 拆分不再以空格连接，消除假空格；
+- 图片行下一行为图注（图N/表N）时回填语义化 alt。
 """
 
 import argparse
@@ -15,12 +24,38 @@ import re
 import sys
 from collections import deque
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
+from bs4.element import CData, Comment, Declaration, ProcessingInstruction
 import chardet
 
 # --docx 提供时由 main() 填充：段落归一化文本 -> 真实编号队列（按文档顺序消费）
 NUMBER_INDEX = None
 _NUMBER_MISS = []  # 编号 <li> 未命中对齐时的文本片段（警告清单）
+
+_TOC_PLACEHOLDER = "@@TOC_PLACEHOLDER@@"
+_TOC_P_RE = re.compile(r"^MsoToc([1-9])$")
+_TOC_ANCHOR_RE = re.compile(r"^#?_Toc\d+$", re.IGNORECASE)
+_TOC_NUM_RE = re.compile(r"^(第[0-9一二三四五六七八九十百]+章|\d+(?:\.\d+)*)\s+(.+)$")
+_TO_ANCHOR_RE = re.compile(r"^_Toc\d+$", re.IGNORECASE)
+_PANDOC_TOC_MIN = 3  # 连续命中段落达到该数量才判定为 pandoc TOC
+
+
+def _norm_ws(text):
+    """文本节点空白规范化，区分两类空白：
+
+    - 语义空格（&nbsp;/全角空格、run 内普通空格）→ 保留（图注「表11 题名」分隔、
+      「单 位」对齐空格均为原文内容）；
+    - 排版空白（标签间换行/缩进构成的纯空白节点）→ 返回空串丢弃，
+      节点内换行折叠为空格（WPS 跨行 HTML 不得引入假空格）。
+    """
+    text = text.replace("\xa0", "\x00").replace("\u3000", "\x00")
+    text = re.sub(r"[ \t]*\r?\n[ \t\r\n]*", " ", text)
+    text = re.sub(r"\t+", " ", text)
+    has_semantic = "\x00" in text
+    text = text.replace("\x00", " ")
+    if not has_semantic and not text.strip():
+        return ""
+    return text
 
 
 def _td_content(td):
@@ -34,10 +69,10 @@ def _td_content(td):
                     alt = os.path.basename(src)
                 parts.append(f"![{alt}]({src})")
         elif child.name is None:
-            text = str(child).strip()
-            if text:
-                parts.append(text)
-    return ' '.join(parts).strip()
+            # run 拆分（如 <font>C</font><font>har*</font>）直接连接，
+            # 不以空格拼接（test-case-2 假空格根源）；节点间真实空白由文本节点自身携带
+            parts.append(_norm_ws(str(child)))
+    return re.sub(r" {2,}", " ", "".join(parts)).strip()
 
 
 def convert_table(table):
@@ -103,7 +138,7 @@ def _render_inline(node):
     parts = []
     for child in node.children:
         if child.name is None:
-            text = str(child).strip()
+            text = _norm_ws(str(child)).strip()
             if text:
                 parts.append(text)
         elif child.name in ('ol', 'ul'):
@@ -238,7 +273,8 @@ def convert_element(elem):
     result = []
     for child in elem.children:
         if child.name is None:
-            text = str(child).strip()
+            # 保留语义空白（&nbsp;）与节点间原有空格（修复「1.4.1政策法规」类粘连）
+            text = _norm_ws(str(child))
             if text:
                 result.append(text)
         elif child.name == 'p':
@@ -249,8 +285,13 @@ def convert_element(elem):
             result.append("\n")
         elif child.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
             level = int(child.name[1])
-            text = child.get_text().strip()
-            result.append("#" * level + " " + text + "\n\n")
+            text = re.sub(r"\s+", " ", child.get_text()).strip()
+            line = "#" * level + " " + text
+            anchor = child.get("data-toc-anchor")
+            if anchor:
+                # 目录跳转锚（Typora/VSCode 预览可定位；GitHub 静默忽略）
+                line += f' <a id="{anchor}"></a>'
+            result.append(line + "\n\n")
         elif child.name in ['b', 'strong']:
             text = child.get_text().strip()
             if text:
@@ -292,6 +333,272 @@ def convert_element(elem):
     return "".join(result)
 
 
+# ------------------------------------------------- WPS/Word HTML 预处理（test-case-3）
+
+
+def _clean_soup_nodes(soup):
+    """整节点删除条件注释/声明/处理指令（域代码块、<![if !supportLists]> 等）。"""
+    for node in soup.find_all(
+        string=lambda s: isinstance(
+            s, (Comment, Declaration, ProcessingInstruction, CData)
+        )
+    ):
+        node.extract()
+
+
+def _extract_toc_page(p):
+    """从目录段落的 PAGEREF 域块（条件注释内）提取缓存页码。"""
+    for s in p.find_all(string=lambda t: isinstance(t, Comment)):
+        m = re.search(r"field-separator.*?>(\d+)<.*?field-end", str(s), re.S)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _parse_toc_entries(soup):
+    """目录解析入口：优先 Word/WPS 的 MsoToc 段落，未命中时尝试 pandoc TOC。
+
+    均须在 _clean_soup_nodes 之前调用（MsoToc 页码在条件注释域块内）。
+    条目：{level, anchor, number, title, page}；首个段落原位替换为占位段，
+    供 convert 输出后在后处理阶段生成结构化目录块。
+    """
+    entries = _parse_mso_toc(soup)
+    if not entries:
+        entries = _parse_pandoc_toc(soup)
+    return entries
+
+
+def _make_toc_entry(level, anchor, text, page):
+    nm = _TOC_NUM_RE.match(text)
+    if nm:
+        number, title = nm.group(1), nm.group(2).strip()
+    else:
+        number, title = None, text
+    return {
+        "level": level,
+        "anchor": anchor,
+        "number": number,
+        "title": title,
+        "page": page,
+        "backfill": None,
+    }
+
+
+def _toc_placeholder(soup, first_p, placeholder_done):
+    """首个目录段原位替换为占位段，其余移除。"""
+    if placeholder_done:
+        first_p.decompose()
+    else:
+        placeholder = soup.new_tag("p")
+        placeholder.string = _TOC_PLACEHOLDER
+        first_p.replace_with(placeholder)
+    return True
+
+
+def _parse_mso_toc(soup):
+    """解析 Word/WPS 目录区（p.MsoToc1..9），返回条目列表并从正文中移除。"""
+    entries = []
+    placeholder_done = False
+    for p in list(soup.find_all("p")):
+        classes = [c for c in (p.get("class") or []) if isinstance(c, str)]
+        m = None
+        for c in classes:
+            m = _TOC_P_RE.match(c)
+            if m:
+                break
+        if not m:
+            continue
+        level = int(m.group(1))
+        a = p.find("a", href=_TOC_ANCHOR_RE)
+        anchor = None
+        if a is not None:
+            anchor = a.get("href", "").lstrip("#") or None
+            entry_text = a.get_text()
+        else:
+            entry_text = "".join(
+                s for s in p.find_all(string=True) if not isinstance(s, Comment)
+            )
+        page = _extract_toc_page(p)
+        text = _norm_ws(entry_text).strip()
+        entries.append(_make_toc_entry(level, anchor, text, page))
+        placeholder_done = _toc_placeholder(soup, p, placeholder_done)
+    return entries
+
+
+def _collect_heading_anchors(soup):
+    """收集正文中可作为目录跳转目标的锚点（标题 id 与 <a name/_Toc> 书签）。"""
+    ids = set()
+    for h in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+        for key in ("id",):
+            v = h.get(key)
+            if v:
+                ids.add(v)
+    return ids
+
+
+def _parse_pandoc_toc(soup):
+    """识别 pandoc 从 docx 导出的 TOC（docx 目录域缓存文本，编号为渲染正确值）。
+
+    形态：连续 `<p><a href="#标题id">编号 标题 <span>页码</span></a></p>`，
+    且 href 目标必须是正文标题 id（硬条件，防误判正文交叉引用段落）；
+    连续命中 ≥3 条才判定为 TOC。层级由编号深度推断。
+    """
+    heading_ids = _collect_heading_anchors(soup)
+    if not heading_ids:
+        return []
+    runs, current = [], []
+    for p in list(soup.find_all("p")):
+        a = p.find("a")
+        hit = None
+        if a is not None and p.get_text().strip() == a.get_text().strip():
+            href = a.get("href", "")
+            anchor = href[1:] if href.startswith("#") else None
+            if anchor and anchor in heading_ids:
+                spans = a.find_all("span")
+                page = None
+                if spans and spans[-1].get_text().strip().isdigit():
+                    page = spans[-1].get_text().strip()
+                    spans[-1].extract()
+                hit = (anchor, page)
+        if hit:
+            current.append((p, hit[0], hit[1]))
+        else:
+            if len(current) >= _PANDOC_TOC_MIN:
+                runs.append(current)
+            current = []
+    if len(current) >= _PANDOC_TOC_MIN:
+        runs.append(current)
+    if not runs:
+        return []
+    run = max(runs, key=len)
+    entries = []
+    placeholder_done = False
+    for p, anchor, page in run:
+        a = p.find("a")
+        text = _norm_ws(a.get_text()).strip()
+        level = 1
+        nm = _TOC_NUM_RE.match(text)
+        if nm:
+            level = nm.group(1).count(".") + 1 if not nm.group(1).startswith("第") else 1
+        entries.append(_make_toc_entry(level, anchor, text, page))
+        placeholder_done = _toc_placeholder(soup, p, placeholder_done)
+    return entries
+
+
+def _backfill_headings(soup, entries):
+    """TOC 编号反哺正文标题：锚点对齐优先，归一化文本比对兜底。
+
+    锚点来源：标题内 `<a name/_id="_TocXXX">` 书签（WPS/Word）与标题 `id`
+    属性（pandoc，值为标题文本）。命中的标题剥离 mso-list:Ignore 错误缓存
+    编号，插入目录缓存的真实编号，并记录 data-toc-anchor 供输出行尾锚。
+    返回（命中数, 未命中条目标题列表）。
+    """
+    headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+    anchor_map = {}
+    title_map = {}
+    for h in headings:
+        for a in h.find_all("a"):
+            nm = a.get("name") or a.get("id")
+            if nm and _TO_ANCHOR_RE.match(nm):
+                anchor_map.setdefault(nm, h)
+        hid = h.get("id")
+        if hid and hid not in anchor_map:
+            anchor_map[hid] = h
+        t = re.sub(r"\s+", "", h.get_text())
+        if t:
+            title_map.setdefault(t, []).append(h)
+    matched, misses = 0, []
+    used = set()
+    for e in entries:
+        if not e["number"]:
+            continue
+        h = anchor_map.get(e["anchor"]) if e["anchor"] else None
+        if h is None:
+            cands = title_map.get(re.sub(r"\s+", "", e["title"]), [])
+            if len(cands) == 1:
+                h = cands[0]
+            else:
+                misses.append(e["number"] + " " + e["title"])
+                continue
+        if id(h) in used:
+            continue
+        for sp in h.find_all("span", style=re.compile(r"mso-list:Ignore", re.I)):
+            sp.decompose()
+        cur = re.sub(r"\s+", "", h.get_text())
+        num = re.sub(r"\s+", "", e["number"])
+        rest = cur[len(num):] if cur.startswith(num) else None
+        if rest is not None and (not rest or (not rest[0].isdigit() and rest[0] != ".")):
+            # 标题已携带同编号（如 test-case-2 正文标题自带编号缓存），仅记录锚点不重复插入
+            if e["anchor"]:
+                h["data-toc-anchor"] = e["anchor"]
+            e["backfill"] = "already"
+            used.add(id(h))
+            matched += 1
+            continue
+        h.insert(0, NavigableString(e["number"] + " "))
+        if e["anchor"]:
+            h["data-toc-anchor"] = e["anchor"]
+        e["backfill"] = "anchor" if anchor_map.get(e["anchor"]) is h else "text"
+        used.add(id(h))
+        matched += 1
+    return matched, misses
+
+
+def _render_toc_block(entries):
+    """渲染结构化目录块：按 MsoToc 层级缩进的 md 链接列表 + 页码后缀。"""
+    lines = []
+    for e in entries:
+        indent = "  " * (e["level"] - 1)
+        label = f"{e['number']} {e['title']}" if e["number"] else e["title"]
+        page = f" · {e['page']}" if e["page"] else ""
+        if e["anchor"]:
+            lines.append(f"{indent}- [{label}](#{e['anchor']}){page}")
+        else:
+            lines.append(f"{indent}- {label}{page}")
+    return "\n".join(lines)
+
+
+def _strip_leading_ws(content):
+    """行级清理：代码块外清除行首空白（4 空格会被渲染为代码块），保留列表/引用/表格缩进。"""
+    lines = content.split("\n")
+    out = []
+    in_code = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            out.append(line)
+            continue
+        if in_code:
+            out.append(line)
+        elif re.match(r"^\s*(?:[-*+]|\d+\.|>|\|)", line):
+            out.append(line.rstrip())
+        else:
+            out.append(re.sub(r"^\s+", "", line).rstrip())
+    return "\n".join(out)
+
+
+def _backfill_image_alts(content):
+    """图片行紧跟图注（图N/表N + 文字）时，用图注文本回填图片 alt。"""
+    lines = content.split("\n")
+    img_re = re.compile(r"^!\[([^]]*)\]\(([^)]+)\)\s*$")
+    cap_re = re.compile(r"^((?:图|表)\s*\d+\s*\S.*)$")
+    for i, line in enumerate(lines):
+        m = img_re.match(line)
+        if not m:
+            continue
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j].strip()
+            if not nxt:
+                continue
+            if not nxt.startswith("```"):
+                cm = cap_re.match(nxt)
+                if cm and not nxt.startswith(("#", "|", "![", "[")):
+                    alt = cm.group(1).strip().replace("[", "（").replace("]", "）")
+                    lines[i] = f"![{alt}]({m.group(2)})"
+            break
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------- 疑点清单
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9/+·\-]{8,}")
@@ -299,10 +606,13 @@ _GLUE_RE = re.compile(r"[a-z][A-Z]|[A-Z][A-Z][a-z]|[A-Za-z]\d|\d[A-Za-z]")
 _TAIL_EN_RE = re.compile(r"[A-Za-z]{2,}$")
 _HEAD_EN_RE = re.compile(r"^[A-Za-z]{2,}")
 _SKIP_LINE_RE = re.compile(r"^\s*(\||#|```|!\[|\[.*\]\(|[-*+]\s|>\s|\d+\.\s)")
+_RESIDUE_RE = re.compile(r"PAGEREF|mso-|\[if |field-(?:begin|separator|end)")
+_NUMGLUE_RE = re.compile(r"^\d+(?:\.\d+)+[^\s.\d]")
+_FIGGLUE_RE = re.compile(r"^(?:图|表)\d+[^ 0-9\s]")
 
 
 def _checklist_items(content):
-    """扫描转换产物，返回（疑似粘连, 疑似断行）两组条目。
+    """扫描转换产物，返回（疑似粘连, 疑似断行, 残留/粘连行）三组条目。
 
     只检测不改写：粘连正误无法自动判定（iPhone/IoT 等专有名词会被误拆），
     输出清单供人工按 SKILL.md 步骤5 逐一修复。
@@ -324,12 +634,27 @@ def _checklist_items(content):
             continue
         if _TAIL_EN_RE.search(cur) and _HEAD_EN_RE.match(nxt):
             broken.append((i + 1, cur[-40:], nxt[:20]))
-    return glued, broken
+    issues = []
+    in_code = False
+    for lineno, line in enumerate(lines, 1):
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if _RESIDUE_RE.search(line):
+            issues.append((lineno, "域代码/样式残留", line.strip()[:60]))
+        elif _NUMGLUE_RE.match(line.strip()) and not _SKIP_LINE_RE.match(line):
+            issues.append((lineno, "编号与文字粘连", line.strip()[:60]))
+        elif _FIGGLUE_RE.match(line.strip()):
+            issues.append((lineno, "图注/表题粘连", line.strip()[:60]))
+    return glued, broken, issues
 
 
-def generate_checklist(content, md_path):
+def generate_checklist(content, md_path, backfill_miss=None):
     """生成疑点清单文件（与 md 同目录、同名 + .疑点清单.md），返回路径。"""
-    glued, broken = _checklist_items(content)
+    glued, broken, issues = _checklist_items(content)
+    backfill_miss = backfill_miss or []
     out_path = re.sub(r"\.md$", "", md_path) + ".疑点清单.md"
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("# 疑点清单（自动检测，仅供人工核查定位，未自动改写）\n\n")
@@ -350,6 +675,22 @@ def generate_checklist(content, md_path):
             f.write("| 行号 | 行尾 | 下行行首 |\n|---|---|---|\n")
             for lineno, tail, head in broken:
                 f.write(f"| {lineno} | …{tail} | {head}… |\n")
+        else:
+            f.write("（无）\n")
+        f.write(f"\n## 域代码残留 / 编号粘连（{len(issues)} 处）\n\n")
+        f.write("域代码残留说明条件注释清理未覆盖；编号/图注粘连建议对照原文补空格。\n\n")
+        if issues:
+            f.write("| 行号 | 类型 | 所在行 |\n|---|---|---|\n")
+            for lineno, kind, ctx in issues:
+                f.write(f"| {lineno} | {kind} | {ctx} |\n")
+        else:
+            f.write("（无）\n")
+        f.write(f"\n## 编号反哺未命中（{len(backfill_miss)} 条）\n\n")
+        f.write("目录条目按锚点/文本均未对齐到正文标题，正文编号未被回填，"
+                "建议对照目录手工修正。\n\n")
+        if backfill_miss:
+            for item in backfill_miss:
+                f.write(f"- {item}\n")
         else:
             f.write("（无）\n")
     return out_path, len(glued), len(broken)
@@ -412,6 +753,12 @@ def html_to_markdown(html_path, md_path=None, docx_path=None, checklist=False):
     for tag in soup(["script", "style", "meta", "link"]):
         tag.decompose()
 
+    # WPS/Word HTML 预处理：目录解析（须先于域代码清理，页码在注释域块内）
+    # + 条件注释/域代码清理 + 编号反哺
+    toc_entries = _parse_toc_entries(soup)
+    _clean_soup_nodes(soup)
+    backfill_ok, backfill_miss = _backfill_headings(soup, toc_entries)
+
     body = soup.find('body')
     content = convert_element(body) if body else convert_element(soup)
 
@@ -421,13 +768,32 @@ def html_to_markdown(html_path, md_path=None, docx_path=None, checklist=False):
     content = re.sub(r'^(\d+(?:\.\d+)*)(\*\*)', r'\1 \2', content, flags=re.MULTILINE)
     content = re.sub(r'\*\*\*\*', '', content)
     content = re.sub(r'\n{5,}', '\n\n\n\n', content)
-    content = '\n'.join(line.rstrip() for line in content.split('\n'))
+    content = _strip_leading_ws(content)
+
+    # 目录占位段 → 结构化目录块（md 链接列表 + 页码后缀）
+    if toc_entries:
+        toc_block = _render_toc_block(toc_entries)
+        content = re.sub(
+            rf"^{re.escape(_TOC_PLACEHOLDER)}\s*$", toc_block, content,
+            count=1, flags=re.MULTILINE)
+        content = content.replace(_TOC_PLACEHOLDER, "")
+    # 图片 alt 图注回填
+    content = _backfill_image_alts(content)
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(content)
 
     print(f"[OK] Conversion complete: {md_path}")
     print(f"[OK] File size: {len(content)} characters")
+
+    if toc_entries:
+        print(f"[OK] 目录结构化: {len(toc_entries)} 条")
+        numbered = sum(1 for e in toc_entries if e["number"])
+        if numbered:
+            msg = f"[OK] 编号反哺: {backfill_ok}/{numbered} 条命中"
+            if backfill_miss:
+                msg += f"（未命中 {len(backfill_miss)} 条，详见疑点清单）"
+            print(msg)
 
     # 编号回填未命中的 <li> 警告（回退 <ol start> 逻辑，此处仅提示核对）
     if NUMBER_INDEX is not None:
@@ -442,7 +808,8 @@ def html_to_markdown(html_path, md_path=None, docx_path=None, checklist=False):
             print("[OK] 编号回填全部命中")
 
     if checklist:
-        cl_path, n_glue, n_break = generate_checklist(content, md_path)
+        cl_path, n_glue, n_break = generate_checklist(
+            content, md_path, backfill_miss=backfill_miss)
         print(f"[OK] 疑点清单: {cl_path}（粘连 {n_glue} / 断行 {n_break}，仅供人工核查）")
 
     return md_path
