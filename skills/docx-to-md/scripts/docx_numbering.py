@@ -4,8 +4,8 @@
 
 直接解析 docx 包内的 word/numbering.xml + word/document.xml（+ styles.xml
 样式级编号），按文档顺序产出每个带编号段落的真实编号文本。供
-`html_to_markdown.py --docx`（方案C 编号回填）与
-`test-case/verify_numbering_backfill.py`（回归比对）共用。
+`html_to_markdown.py --docx`（方案C 编号回填）、`verify_numbering.py`
+（回归比对）与 `test_docx_numbering.py`（单元测试）使用。
 
 语义要点（由 test-case-1 参考答案反推并 527/527 全量吻合，fixture 固化）：
   1. 计数器按 numId 隔离：每个 w:num 是独立列表实例，互不延续；
