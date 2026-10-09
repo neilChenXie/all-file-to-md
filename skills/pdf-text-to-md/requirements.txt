@@ -1,6 +1,6 @@
-# pdf-to-md skill 依赖清单（入口：仅文本层/乱码检测与分发）
+# pdf-text-to-md skill 依赖清单
 # 安装：pip install -r <skill目录>/requirements.txt
 # 国内网络慢可用镜像：pip install -r <skill目录>/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# PDF 解析/文本层检测（check_textlayer.py）
+# PDF 解析/文本层提取与表格还原/PNG 导出（extract_pdf_to_md.py、pdf_to_png.py）
 pymupdf>=1.24

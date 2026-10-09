@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 r"""
-pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（pdf-to-md skill 步骤4.1 / 3.2 用）
+pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（pdf-img-to-md skill 步骤2.2 用）
 
 用法:
     python pdf_to_png.py <PDF文件路径> [--dpi 200] [--start-page N] [--end-page N] [--output-dir <目录>]
@@ -12,7 +12,7 @@ pdf_to_png.py —— 将用户指定的 PDF 文件逐页导出为 PNG 图片（p
 
 命名规则:
     <清洗后PDF文件名>_01.png、<清洗后PDF文件名>_02.png ...（页码宽度按总页数自动补零，
-    如 150 页则命名为 _001.png ~ _150.png，满足 skill 步骤4.2 的前缀判断规则）
+    如 150 页则命名为 _001.png ~ _150.png，满足 pdf-img-to-md skill 步骤3.1 的前缀判断规则）
     文件名中的空格及其他非法字符（\ / : * ? " < > | 及控制字符）替换为下划线 _。
 
 依赖:

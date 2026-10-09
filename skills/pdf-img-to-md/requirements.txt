@@ -1,0 +1,12 @@
+# pdf-img-to-md skill 依赖清单
+# 安装：pip install -r <skill目录>/requirements.txt
+# 国内网络慢可用镜像：pip install -r <skill目录>/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# PDF 渲染/PNG 导出（pdf_to_png.py；crop_images.py 渲染回退）
+pymupdf>=1.24
+
+# 图像裁剪与转码（crop_images.py、实践经验中的 JPEG 转码绕指纹）
+pillow>=10.0
+
+# 插图定位的行/列像素带分析（4.8 实践经验）
+numpy>=1.24

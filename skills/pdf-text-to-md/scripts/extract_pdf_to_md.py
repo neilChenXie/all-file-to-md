@@ -12,8 +12,8 @@
       章节标题从 h2 起逐级提升（##/###）
     - 版式特殊的文档可用 --title-pats 追加标题正则，无需修改代码
     - 乱码守卫：文本层内容为乱码（字体缺 ToUnicode 映射/编码错乱）时放弃直提——
-      乱码页占有效内容页 ≥5% 时直接退出且不生成输出文件（改走图片 OCR 路线），
-      个别乱码页（<5%）不入正文、仅留注释待按 SKILL 3.2 用图像识别回退
+      乱码页占有效内容页 ≥5% 时直接退出且不生成输出文件（加载 pdf-img-to-md skill 走图片 OCR 路线），
+      个别乱码页（<5%）不入正文、仅留注释待按 SKILL 步骤3 用图像识别回退
 
 退出码: 0 = 成功, 2 = 参数/依赖错误, 3 = 文本层为乱码已放弃直提。
 
@@ -285,7 +285,7 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
                  '、'.join(map(str, sorted(garbled_pages)[:5]))), file=sys.stderr)
         for p in sorted(garbled_pages)[:3]:
             print('  第 %d 页: %s' % (p, '；'.join(garbled_pages[p])), file=sys.stderr)
-        print('已放弃文本层提取，未生成输出文件。请改走图片 OCR 路线（SKILL 步骤4）：'
+        print('已放弃文本层提取，未生成输出文件。请加载 pdf-img-to-md skill 走图片 OCR 路线：'
               'python -X utf8 pdf_to_png.py <pdf> 导出 PNG 后交多模态子agent识别。', file=sys.stderr)
         sys.exit(3)
 
@@ -308,7 +308,7 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
 
     for pno, page, kept, docpage in page_rows:
         if pno in garbled_pages:
-            # 乱码页不直提：留注释，按 SKILL 3.2 导出 PNG 后用图像识别回退
+            # 乱码页不直提：留注释，按 SKILL 步骤3 导出 PNG 后用图像识别回退
             pages_out.append('<!-- 第 ' + str(pno) + ' 页 -->')
             pages_out.append('')
             pages_out.append('<!-- 本页文本层乱码，已放弃直提（%s）：'
@@ -462,7 +462,7 @@ def extract(pdf_path, out_path, extra_sec_pats=()):
                       + ' 页命中；无页脚页：' + ', '.join(map(str, no_footer)) + '）')
     header.append('> - 各页页脚（页码、打印日期等）已移除，其余正文内容全部保留')
     if garbled_pages:
-        header.append('> - 文本层乱码回退页（未直提，需按 3.2 用图像识别补充）：'
+        header.append('> - 文本层乱码回退页（未直提，需按步骤3 用图像识别补充）：'
                       + ', '.join(map(str, sorted(garbled_pages))))
     header.append('')
     content = '\n'.join(header) + '\n' + '\n'.join(pages_out)
