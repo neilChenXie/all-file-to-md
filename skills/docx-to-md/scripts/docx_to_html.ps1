@@ -135,6 +135,23 @@ if (-not $converted -or -not (Test-Path $OutputFile)) {
     Write-Host ""
     Write-Host "[ERROR] WPS 与 Microsoft Word 均无法完成导出"
 
+    # 诊断：当前进程是否为管理员（高完整性）——高完整性进程的 COM 运行时忽略用户级(HKCU)注册，
+    # WPS 按用户安装/注册时其 COM 在此类进程中不可见（New-Object 报 80040154 没有注册类），
+    # 这不代表 WPS 未安装或注册损坏（普通权限进程中可正常自动化）。
+    $isElevated = $false
+    try {
+        $wp = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        $isElevated = $wp.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { }
+    if ($isElevated) {
+        Write-Host ""
+        Write-Host "检测到当前进程以管理员（高完整性）权限运行: Windows 会忽略用户级(HKCU) COM 注册，"
+        Write-Host "若 WPS 为按用户安装/注册，其 COM 在此类进程中不可用（80040154）。处理办法（任选其一）:"
+        Write-Host "  1) 先运行本技能 scripts\register_wps_com_machine.ps1（需管理员）把 WPS 注册同步到机器级后重试;"
+        Write-Host "  2) 改用非管理员权限的 PowerShell 运行本脚本（无需注册表改动）。"
+        Write-Host "注意: 不要据此判定 WPS 未安装/注册异常，先排除管理员权限因素。"
+    }
+
     # 诊断：WPS / Word 是否正在运行（若其中打开着目标文件，COM 将无法激活或打开该文件，New-Object 会静默失败）
     $running = Get-Process -Name "wps", "wpspdf", "et", "wpp", "winword" -ErrorAction SilentlyContinue
     if ($running) {

@@ -78,8 +78,11 @@ Mac 系统无 COM 自动化：优先采用方案B（由用户手动用 WPS / Wor
 1. 若日志先出现「[WARN] WPS COM 连接失败」随后显示「[OK] Word conversion successful」→ 属正常回退，无需处理，继续后续步骤。
 2. 若最终报「WPS 与 Microsoft Word 均无法完成导出」，再看脚本给出的诊断：
    - **提示 WPS / Word 程序打开着目标文件** → 这是最常见的失败原因：**WPS / Word 打开着目标 docx 文件时，COM 组件无法激活（`New-Object` 会静默失败）或无法打开该文件**。此时必须**提示用户关闭打开了目标文件的 WPS / Word 窗口（保险起见可关闭所有窗口），然后重试**。不要替用户强杀进程，避免丢失未保存的文档。
-   - 用户关闭后重试仍失败，或提示未检测到 WPS / Word 进程 → 大概率未安装 WPS 与 Microsoft Word，或 COM 注册异常。提示用户安装其一后重试；若无法安装，转方案B（提醒用户用其他工具将 docx 转存为 PDF）或方案C（pandoc）。
+   - 用户关闭后重试仍失败，或提示未检测到 WPS / Word 进程 → 依次排查：① 是否**管理员（高完整性）进程**（见下条 4，本机实测最常见）；② 未安装 WPS 与 Microsoft Word；③ COM 注册异常。提示用户安装其一后重试；若无法安装，转方案B（提醒用户用其他工具将 docx 转存为 PDF）或方案C（pandoc）。
 3. 注意：部分执行环境（如安全策略）会拦截内联的 `New-Object -ComObject` 调用，此时应通过运行本脚本文件的方式触发 COM，而不是在命令行里内联实例化。
+4. **管理员（高完整性）进程看不到 WPS 的用户级 COM 注册**（2026-10-10 实测确认）：Windows 自 Vista 起规定，完整性级别高于 Medium 的进程，COM 运行时忽略 HKCU 用户级注册、只读取机器级(HKLM)注册。WPS 默认按用户注册，因此在管理员权限运行的 PowerShell / 智能体工具中 `New-Object -ComObject Kwps.Application` 会报 `80040154 没有注册类`——这不代表 WPS 未安装或注册损坏（用户正常打开、非管理员进程自动化均不受影响）。处理（任选其一）：
+   - 运行 `./scripts/register_wps_com_machine.ps1`（需管理员）把 WPS 的 COM 注册同步到机器级后重试；WPS 升级换目录后如再报错，重跑该同步脚本刷新即可；
+   - 或改用非管理员权限的 PowerShell 运行本脚本（无需注册表改动）。
 
 #### 方案B（回退）：转存 PDF + `pdf-to-md` 技能识别
 

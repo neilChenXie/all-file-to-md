@@ -22,7 +22,7 @@ desktop.ini
 ## Obsidian
 .obsidian/
 
-## AI Agents & Plugins
+# AI Agents & Plugins
 .kilo/
 .claude/
 
@@ -37,6 +37,7 @@ sessions/
 conversations/
 
 # 语言及编译中间文件
+
 ## Python
 __pycache__/
 *.pyc
